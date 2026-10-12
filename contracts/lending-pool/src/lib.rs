@@ -17,7 +17,7 @@ mod test_loan_assumption;
 
 pub use crate::errors::{LoanAssumptionError, PoolError};
 pub use crate::types::{
-    BatchDisburseItem, DataKey, HalvingInfo, InvestorRecord, LoanAssumptionRequest,
+    BatchDisburseItem, DataKey, FeatureKey, HalvingInfo, InvestorRecord, LoanAssumptionRequest,
     LoanCollateralRecord, LoanPortabilitySnapshot, LoanRecord, LoanStatus, PayoffQuote,
     PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche,
     TrancheInfo,
@@ -203,7 +203,7 @@ impl LendingPoolContract {
     // distribution whose ordering can't be trusted.
 
     /// The configured tranche processing order, most senior first. No
-    /// current code path ever writes `DataKey::WaterfallOrder` — the default
+    /// current code path ever writes `FeatureKey::WaterfallOrder` — the default
     /// below is always what real `repay` calls see. The storage read exists
     /// so tests can deliberately inject a misordered list (simulating a
     /// misconfigured or upgraded distribution routine) and confirm the
@@ -211,7 +211,7 @@ impl LendingPoolContract {
     fn read_waterfall_order(env: &Env) -> Vec<Tranche> {
         env.storage()
             .instance()
-            .get(&DataKey::WaterfallOrder)
+            .get(&FeatureKey::WaterfallOrder)
             .unwrap_or_else(|| soroban_sdk::vec![env, Tranche::Senior, Tranche::Junior])
     }
 
@@ -1200,11 +1200,7 @@ impl LendingPoolContract {
     /// (wrong ABI, panic, etc.) returns an error rather than reverting the
     /// whole transaction with an opaque trap.  Returns `false` on any error
     /// so the gate fails closed.
-    fn governance_proposal_is_approved(
-        env: &Env,
-        governance: &Address,
-        proposal_id: u32,
-    ) -> bool {
+    fn governance_proposal_is_approved(env: &Env, governance: &Address, proposal_id: u32) -> bool {
         let args = soroban_sdk::vec![env, proposal_id.into_val(env)];
         match env.try_invoke_contract::<bool, soroban_sdk::Error>(
             governance,
@@ -1226,11 +1222,7 @@ impl LendingPoolContract {
     /// been called).  We use raw `env.invoke_contract` consistent with every
     /// other cross-contract call in this file.
     fn insurance_claim(env: &Env, insurance: &Address, recipient: &Address, amount: i128) {
-        let args = soroban_sdk::vec![
-            env,
-            recipient.into_val(env),
-            amount.into_val(env),
-        ];
+        let args = soroban_sdk::vec![env, recipient.into_val(env), amount.into_val(env),];
         env.invoke_contract::<()>(insurance, &Symbol::new(env, "claim"), args);
     }
 
@@ -1320,7 +1312,7 @@ impl LendingPoolContract {
             permissioned_mode: false,
             // No fee waiver at deployment: every withdrawal pays the
             // utilization-based fee exactly as before until an admin opts in
-            // via `set_redemption_fee_waiver_ledgers`.
+            // via `set_redemption_waiver_ledgers`.
             redemption_fee_waiver_ledgers: 0,
             // Payoff quoting disabled at deployment until an admin sets a
             // window via `set_payoff_quote_window`.
@@ -1430,15 +1422,16 @@ impl LendingPoolContract {
             // the token transfer so a rejected call leaves pool state untouched.
             // A configured value of 0 disables the cooldown (default).
             if config.deposit_cooldown_ledgers > 0 {
-                let last: u32 = env
+                let last: Option<u32> = env
                     .storage()
                     .persistent()
-                    .get(&DataKey::InvestorLastDeposit(investor.clone()))
-                    .unwrap_or(0);
-                if last > 0
-                    && env.ledger().sequence() < last.saturating_add(config.deposit_cooldown_ledgers)
-                {
-                    return Err(PoolError::DepositCooldownActive);
+                    .get(&FeatureKey::InvestorLastDeposit(investor.clone()));
+                if let Some(last) = last {
+                    if env.ledger().sequence()
+                        < last.saturating_add(config.deposit_cooldown_ledgers)
+                    {
+                        return Err(PoolError::DepositCooldownActive);
+                    }
                 }
             }
 
@@ -1450,9 +1443,10 @@ impl LendingPoolContract {
             // Written after the transfer succeeds so a failed transfer never
             // resets the clock.
             let current_ledger = env.ledger().sequence();
-            env.storage()
-                .persistent()
-                .set(&DataKey::InvestorLastDeposit(investor.clone()), &current_ledger);
+            env.storage().persistent().set(
+                &FeatureKey::InvestorLastDeposit(investor.clone()),
+                &current_ledger,
+            );
 
             // Update investor record.
             let mut record = Self::read_investor(&env, &investor);
@@ -2041,7 +2035,25 @@ impl LendingPoolContract {
         Self::check_not_paused(&env)?;
         let config = Self::read_config(&env)?;
         config.admin.require_auth();
+        Self::record_refinance_request(
+            env,
+            &config,
+            loan_id,
+            new_interest_rate_bps,
+            new_duration_months,
+        )
+    }
 
+    // Authorization lives in the public entrypoints: a single call frame can
+    // only `require_auth` for a given address once, so `refinance_loan` (which
+    // runs both steps) must not hit it twice.
+    fn record_refinance_request(
+        env: Env,
+        config: &PoolConfig,
+        loan_id: BytesN<32>,
+        new_interest_rate_bps: u32,
+        new_duration_months: u32,
+    ) -> Result<(), PoolError> {
         let loan = Self::read_loan(&env, &loan_id)?;
 
         if loan.status != LoanStatus::Approved {
@@ -2104,7 +2116,7 @@ impl LendingPoolContract {
 
         env.storage()
             .persistent()
-            .set(&DataKey::RefinanceRateLock(loan_id.clone()), &rate_lock);
+            .set(&FeatureKey::RefinanceRateLock(loan_id.clone()), &rate_lock);
 
         env.events().publish(
             (Symbol::new(&env, "refi_requested"),),
@@ -2125,19 +2137,19 @@ impl LendingPoolContract {
     /// regardless of any pool-rate changes that may have occurred in between.
     /// Returns `RefinanceRateLockExpired` if the lock window has passed, and
     /// `RefinanceRateLockNotFound` if no pending request exists for the loan.
-    pub fn execute_refinance(
-        env: Env,
-        loan_id: BytesN<32>,
-    ) -> Result<(), PoolError> {
+    pub fn execute_refinance(env: Env, loan_id: BytesN<32>) -> Result<(), PoolError> {
         Self::check_not_paused(&env)?;
         let config = Self::read_config(&env)?;
         config.admin.require_auth();
+        Self::apply_refinance(env, loan_id)
+    }
 
+    fn apply_refinance(env: Env, loan_id: BytesN<32>) -> Result<(), PoolError> {
         // Load and validate the rate-lock.
         let rate_lock: crate::types::RefinanceRateLock = env
             .storage()
             .persistent()
-            .get(&DataKey::RefinanceRateLock(loan_id.clone()))
+            .get(&FeatureKey::RefinanceRateLock(loan_id.clone()))
             .ok_or(PoolError::RefinanceRateLockNotFound)?;
 
         let current_ledger = env.ledger().sequence();
@@ -2161,8 +2173,7 @@ impl LendingPoolContract {
         Self::accrue_interest(&env, &mut loan);
 
         let remaining_principal = loan.outstanding_debt;
-        let new_interest =
-            (remaining_principal * rate_lock.locked_rate_bps as i128) / 10_000;
+        let new_interest = (remaining_principal * rate_lock.locked_rate_bps as i128) / 10_000;
         let total_owed = remaining_principal + new_interest;
 
         let duration = if rate_lock.locked_duration_months > 0 {
@@ -2191,7 +2202,7 @@ impl LendingPoolContract {
         // Consume the rate-lock so it cannot be replayed.
         env.storage()
             .persistent()
-            .remove(&DataKey::RefinanceRateLock(loan_id.clone()));
+            .remove(&FeatureKey::RefinanceRateLock(loan_id.clone()));
 
         env.events().publish(
             (Symbol::new(&env, "loan_refinanced"),),
@@ -2216,13 +2227,17 @@ impl LendingPoolContract {
         new_interest_rate_bps: u32,
         new_duration_months: u32,
     ) -> Result<(), PoolError> {
-        Self::request_refinance(
+        Self::check_not_paused(&env)?;
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+        Self::record_refinance_request(
             env.clone(),
+            &config,
             loan_id.clone(),
             new_interest_rate_bps,
             new_duration_months,
         )?;
-        Self::execute_refinance(env, loan_id)
+        Self::apply_refinance(env, loan_id)
     }
 
     /// Disburse funds from the pool for an approved loan.
@@ -2696,8 +2711,7 @@ impl LendingPoolContract {
         // honored at the stale amount — normal accrual applies and the
         // caller must request a fresh quote.
         let quote_key = DataKey::PayoffQuote(loan_id.clone());
-        let stored_quote: Option<PayoffQuote> =
-            env.storage().persistent().get(&quote_key);
+        let stored_quote: Option<PayoffQuote> = env.storage().persistent().get(&quote_key);
         let mut quoted_payoff = false;
         if let Some(q) = stored_quote {
             if env.ledger().sequence() > q.expires_ledger {
@@ -2732,9 +2746,9 @@ impl LendingPoolContract {
         // If schedule exists, enforce installment logic (due dates, grace, penalties)
         if !quoted_payoff
             && env
-            .storage()
-            .persistent()
-            .has(&DataKey::LoanSchedule(loan_id.clone()))
+                .storage()
+                .persistent()
+                .has(&DataKey::LoanSchedule(loan_id.clone()))
         {
             let mut sched: RepaymentSchedule = env
                 .storage()
@@ -4387,7 +4401,7 @@ impl LendingPoolContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::GovernanceContract, &governance);
+            .set(&FeatureKey::GovernanceContract, &governance);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -4401,7 +4415,9 @@ impl LendingPoolContract {
     /// Returns the configured Governance contract address, or `None` if one
     /// has not been set.
     pub fn get_governance_contract(env: Env) -> Option<Address> {
-        env.storage().instance().get(&DataKey::GovernanceContract)
+        env.storage()
+            .instance()
+            .get(&FeatureKey::GovernanceContract)
     }
 
     /// Set the maximum share of the insurance pool's current reserves that a
@@ -4423,8 +4439,7 @@ impl LendingPoolContract {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events()
-            .publish((symbol_short!("set_eicap"),), cap_bps);
+        env.events().publish((symbol_short!("set_eicap"),), cap_bps);
 
         Ok(())
     }
@@ -4443,7 +4458,7 @@ impl LendingPoolContract {
     pub fn get_total_emergency_injected(env: Env) -> i128 {
         env.storage()
             .instance()
-            .get(&DataKey::TotalEmergencyInjected)
+            .get(&FeatureKey::TotalEmergencyInjected)
             .unwrap_or(0i128)
     }
 
@@ -4482,7 +4497,7 @@ impl LendingPoolContract {
         let governance: Address = env
             .storage()
             .instance()
-            .get(&DataKey::GovernanceContract)
+            .get(&FeatureKey::GovernanceContract)
             .ok_or(PoolError::GovernanceContractNotSet)?;
 
         if !Self::governance_proposal_is_approved(&env, &governance, proposal_id) {
@@ -4525,11 +4540,12 @@ impl LendingPoolContract {
         let prev_injected: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::TotalEmergencyInjected)
+            .get(&FeatureKey::TotalEmergencyInjected)
             .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalEmergencyInjected, &(prev_injected + amount));
+        env.storage().instance().set(
+            &FeatureKey::TotalEmergencyInjected,
+            &(prev_injected + amount),
+        );
 
         env.storage()
             .instance()
@@ -4991,8 +5007,7 @@ impl LendingPoolContract {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
-        env.events()
-            .publish((symbol_short!("set_rllw"),), window);
+        env.events().publish((symbol_short!("set_rllw"),), window);
 
         Ok(())
     }
@@ -5015,7 +5030,7 @@ impl LendingPoolContract {
     ) -> Option<crate::types::RefinanceRateLock> {
         env.storage()
             .persistent()
-            .get(&DataKey::RefinanceRateLock(loan_id))
+            .get(&FeatureKey::RefinanceRateLock(loan_id))
     }
 
     /// Configure the maximum amount an investor may withdraw in a single
@@ -5065,10 +5080,7 @@ impl LendingPoolContract {
     /// `0` disables the waiver: every withdrawal pays the fee exactly as
     /// before. Any non-zero value waives the fee in full once
     /// `current_ledger - investor.start_ledger >= waiver_ledgers`.
-    pub fn set_redemption_fee_waiver_ledgers(
-        env: Env,
-        waiver_ledgers: u32,
-    ) -> Result<(), PoolError> {
+    pub fn set_redemption_waiver_ledgers(env: Env, waiver_ledgers: u32) -> Result<(), PoolError> {
         let mut config = Self::read_config(&env)?;
         config.admin.require_auth();
         config.redemption_fee_waiver_ledgers = waiver_ledgers;
@@ -5083,7 +5095,7 @@ impl LendingPoolContract {
 
     /// Get the configured fee-waiver holding period in ledgers.
     /// `0` means no waiver: all withdrawals pay the fee.
-    pub fn get_redemption_fee_waiver_ledgers(env: Env) -> u32 {
+    pub fn get_redemption_waiver_ledgers(env: Env) -> u32 {
         env.storage()
             .instance()
             .get::<DataKey, PoolConfig>(&DataKey::Config)
@@ -5133,10 +5145,7 @@ impl LendingPoolContract {
     /// `0` disables quoting. A non-zero window (e.g. a 24–48h equivalent in
     /// ledgers) lets `quote_payoff` lock a payoff amount that `repay` honors
     /// verbatim within the window.
-    pub fn set_payoff_quote_window(
-        env: Env,
-        window_ledgers: u32,
-    ) -> Result<(), PoolError> {
+    pub fn set_payoff_quote_window(env: Env, window_ledgers: u32) -> Result<(), PoolError> {
         let mut config = Self::read_config(&env)?;
         config.admin.require_auth();
         config.payoff_quote_window_ledgers = window_ledgers;
@@ -5201,29 +5210,48 @@ impl LendingPoolContract {
             .get(&DataKey::PayoffQuote(loan_id))
     }
 
-    /// Read a stored quote, pruning it when expired.
+    /// Set the minimum number of ledgers an investor must wait between
+    /// consecutive deposits.  Admin-only.
     ///
-    /// Returns `Ok(Some(quote))` while valid, `Ok(None)` when no quote
-    /// exists. An expired quote is removed so it can never be honored at
-    /// the stale amount, and `Err(PayoffQuoteExpired)` is returned so
-    /// callers can explicitly re-quote instead of silently underpaying.
-    fn read_live_payoff_quote(
-        env: &Env,
-        loan_id: &BytesN<32>,
-    ) -> Result<Option<PayoffQuote>, PoolError> {
-        let key = DataKey::PayoffQuote(loan_id.clone());
-        let quote: Option<PayoffQuote> = env.storage().persistent().get(&key);
-        match quote {
-            None => Ok(None),
-            Some(q) => {
-                if env.ledger().sequence() > q.expires_ledger {
-                    env.storage().persistent().remove(&key);
-                    Err(PoolError::PayoffQuoteExpired)
-                } else {
-                    Ok(Some(q))
-                }
-            }
-        }
+    /// Pass `0` to disable the cooldown entirely (the deployment default).
+    /// The cooldown is checked per-investor: two different investors are
+    /// never blocked by each other's activity.
+    ///
+    /// Raising or lowering the cooldown takes effect immediately for the
+    /// *next* deposit attempt.  It does not retroactively reset any
+    /// investor's clock.
+    pub fn set_deposit_cooldown_ledgers(env: Env, cooldown: u32) -> Result<(), PoolError> {
+        let mut config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        config.deposit_cooldown_ledgers = cooldown;
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish((symbol_short!("set_dpcl"),), cooldown);
+
+        Ok(())
+    }
+
+    /// Get the currently configured per-investor deposit cooldown in ledgers.
+    /// `0` means no cooldown is enforced.
+    pub fn get_deposit_cooldown_ledgers(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, PoolConfig>(&DataKey::Config)
+            .map(|config| config.deposit_cooldown_ledgers)
+            .unwrap_or(0)
+    }
+
+    /// Get the ledger sequence of `investor`'s most recent deposit, or `0`
+    /// if they have never deposited.
+    pub fn get_investor_last_deposit(env: Env, investor: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&FeatureKey::InvestorLastDeposit(investor))
+            .unwrap_or(0)
     }
 
     /// Get the currently configured per-day late-payment penalty in basis points.
@@ -6569,7 +6597,7 @@ mod test {
         env.as_contract(&client.address, || {
             env.storage()
                 .instance()
-                .set(&DataKey::WaterfallOrder, &misordered);
+                .set(&FeatureKey::WaterfallOrder, &misordered);
         });
 
         let owed = compound_interest(10_000_0000000i128, 800, 1);
@@ -10976,7 +11004,10 @@ mod test {
         client.deposit(&investor, &1_000_0000000i128, &Tranche::Senior);
         // Immediate second deposit — must succeed when cooldown is disabled.
         let res = client.try_deposit(&investor, &1_000_0000000i128, &Tranche::Senior);
-        assert!(res.is_ok(), "zero cooldown should allow back-to-back deposits");
+        assert!(
+            res.is_ok(),
+            "zero cooldown should allow back-to-back deposits"
+        );
     }
 
     #[test]
@@ -10989,7 +11020,8 @@ mod test {
         client.deposit(&investor, &1_000_0000000i128, &Tranche::Senior);
 
         // Advance only 9 ledgers — still inside the cooldown window.
-        env.ledger().set_sequence_number(env.ledger().sequence() + 9);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 9);
 
         let res = client.try_deposit(&investor, &1_000_0000000i128, &Tranche::Senior);
         assert_eq!(
@@ -11008,10 +11040,14 @@ mod test {
         client.deposit(&investor, &1_000_0000000i128, &Tranche::Senior);
 
         // Advance exactly `cooldown` ledgers — the boundary itself must be allowed.
-        env.ledger().set_sequence_number(env.ledger().sequence() + 10);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 10);
 
         let res = client.try_deposit(&investor, &1_000_0000000i128, &Tranche::Senior);
-        assert!(res.is_ok(), "deposit at exact cooldown boundary must succeed");
+        assert!(
+            res.is_ok(),
+            "deposit at exact cooldown boundary must succeed"
+        );
     }
 
     #[test]
@@ -11021,7 +11057,8 @@ mod test {
         let (_admin, investor, _token, client) = setup_pool_with_cooldown(&env, 10);
 
         client.deposit(&investor, &1_000_0000000i128, &Tranche::Senior);
-        env.ledger().set_sequence_number(env.ledger().sequence() + 11);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 11);
 
         let res = client.try_deposit(&investor, &1_000_0000000i128, &Tranche::Senior);
         assert!(res.is_ok(), "deposit after cooldown window must succeed");
@@ -11070,7 +11107,10 @@ mod test {
 
         // investor2 has never deposited; depositing immediately must succeed.
         let res = client.try_deposit(&investor2, &1_000_0000000i128, &Tranche::Senior);
-        assert!(res.is_ok(), "cooldown of investor1 must not block investor2");
+        assert!(
+            res.is_ok(),
+            "cooldown of investor1 must not block investor2"
+        );
 
         // investor1 is still blocked at ledger 5.
         env.ledger().set_sequence_number(5);
@@ -11103,7 +11143,10 @@ mod test {
         let (_admin, investor, _token, client) = setup_pool_with_cooldown(&env, 100);
 
         let res = client.try_deposit(&investor, &1_000_0000000i128, &Tranche::Senior);
-        assert!(res.is_ok(), "first-ever deposit must not be blocked by cooldown");
+        assert!(
+            res.is_ok(),
+            "first-ever deposit must not be blocked by cooldown"
+        );
     }
 
     #[test]
@@ -11183,7 +11226,6 @@ mod test {
             .try_deposit(&investor, &1_000_0000000i128, &Tranche::Senior)
             .is_ok());
     }
-
 
     // ── Rate-lock tests ───────────────────────────────────────────────────────
 
@@ -11365,8 +11407,7 @@ mod test {
         client.request_refinance(&loan_id, &500u32, &12u32);
 
         // Advance far beyond the window.
-        env.ledger()
-            .set_sequence_number(request_ledger + 1_000);
+        env.ledger().set_sequence_number(request_ledger + 1_000);
 
         let res = client.try_execute_refinance(&loan_id);
         assert_eq!(
@@ -11464,8 +11505,24 @@ mod test {
         );
 
         // Advance a large number of ledgers — execute must still succeed.
-        env.ledger()
-            .set_sequence_number(request_ledger + 2_000_000);
+        // The request already lands ~3.6M ledgers in, near the fixture's
+        // 4M-ledger entry TTL, so extend what execute_refinance reads before
+        // jumping a further 2M.
+        env.ledger().with_mut(|li| li.max_entry_ttl = 10_000_001);
+        env.as_contract(&client.address, || {
+            env.storage().instance().extend_ttl(2_500_000, 2_500_000);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Loan(loan_id.clone()),
+                2_500_000,
+                2_500_000,
+            );
+            env.storage().persistent().extend_ttl(
+                &DataKey::LoanSchedule(loan_id.clone()),
+                2_500_000,
+                2_500_000,
+            );
+        });
+        env.ledger().set_sequence_number(request_ledger + 2_000_000);
         assert!(
             client.try_execute_refinance(&loan_id).is_ok(),
             "lock with window=0 must never expire"
@@ -11532,7 +11589,6 @@ mod test {
         client.set_rate_lock_window_ledgers(&0u32);
         assert_eq!(client.get_rate_lock_window_ledgers(), 0u32);
     }
-
 
     // ── Emergency liquidity injection tests ──────────────────────────────────
 
@@ -11784,10 +11840,7 @@ mod test {
 
         // No set_insurance_pool call.
         let res = client.try_inject_emergency_liquidity(&proposal_id, &100_0000000i128);
-        assert_eq!(
-            res.err().unwrap().unwrap(),
-            PoolError::InsurancePoolNotSet
-        );
+        assert_eq!(res.err().unwrap().unwrap(), PoolError::InsurancePoolNotSet);
     }
 
     /// Zero amount is rejected before any governance or insurance check.

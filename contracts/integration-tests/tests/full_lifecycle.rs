@@ -297,7 +297,9 @@ fn unauthenticated_lending_pool_request_loan_reverts() {
     let borrower = Address::generate(&env);
     let loan_id = BytesN::from_array(&env, &[9u8; 32]);
 
-    let result = p.pool.try_request_loan(&borrower, &loan_id, &(70_000 * USDC));
+    let result = p
+        .pool
+        .try_request_loan(&borrower, &loan_id, &(70_000 * USDC));
     assert!(result.is_err());
 }
 

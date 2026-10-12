@@ -80,8 +80,9 @@ proptest! {
             prop_assert_eq!(
                 expected,
                 is_valid_transition(&trail.last().unwrap().0, &trail.last().unwrap().1),
-                "oracle mismatch at step {} in sequence {trail:?}",
+                "oracle mismatch at step {} in sequence {:?}",
                 trail.len(),
+                trail,
             );
             if expected {
                 current = next;

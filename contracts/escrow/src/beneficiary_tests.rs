@@ -41,6 +41,7 @@ fn setup(env: &Env) -> (Address, Address, Address, EscrowContractClient<'_>, Sym
         yield_vault: None,
         match_bps: 0,
         match_cap: 0,
+        permissioned_mode: false,
     });
     client.set_beneficiary_inactivity(&10);
     client.configure_beneficiary_attestors(&Vec::from_array(env, [attestor.clone()]), &1);
@@ -118,7 +119,10 @@ fn claim_requires_both_inactivity_and_quorum() {
     env.ledger()
         .set_sequence_number(env.ledger().sequence() + 10);
     let full = Vec::from_array(&env, [attestor, second_attestor]);
-    assert_eq!(client.claim_as_beneficiary(&owner, &goal, &beneficiary, &full), 500);
+    assert_eq!(
+        client.claim_as_beneficiary(&owner, &goal, &beneficiary, &full),
+        500
+    );
 }
 
 #[test]
@@ -155,7 +159,10 @@ fn replaced_beneficiary_cannot_claim() {
     assert!(client
         .try_claim_as_beneficiary(&owner, &goal, &old_beneficiary, &attestations)
         .is_err());
-    assert_eq!(client.claim_as_beneficiary(&owner, &goal, &new_beneficiary, &attestations), 500);
+    assert_eq!(
+        client.claim_as_beneficiary(&owner, &goal, &new_beneficiary, &attestations),
+        500
+    );
 }
 
 #[test]
@@ -177,17 +184,17 @@ fn owner_activity_resets_exact_deadline() {
 
     env.ledger()
         .set_sequence_number(env.ledger().sequence() + 1);
-    assert_eq!(client.claim_as_beneficiary(&owner, &goal, &beneficiary, &attestations), 600);
+    assert_eq!(
+        client.claim_as_beneficiary(&owner, &goal, &beneficiary, &attestations),
+        600
+    );
 }
 
 // ── Multi-beneficiary split tests ────────────────────────────────────────────
 
 /// Helper that builds a BeneficiaryList from a slice of (address, share_bps)
 /// pairs, borrowing the env for the inner Vec allocation.
-fn make_list(
-    env: &Env,
-    entries: &[(Address, u32)],
-) -> BeneficiaryList {
+fn make_list(env: &Env, entries: &[(Address, u32)]) -> BeneficiaryList {
     let mut splits = Vec::new(env);
     for (addr, bps) in entries {
         splits.push_back(BeneficiarySplit {
@@ -260,7 +267,9 @@ fn set_beneficiary_list_rejects_empty_list() {
     let env = Env::default();
     let (owner, _b, _a, client, goal) = setup(&env);
 
-    let empty = BeneficiaryList { splits: Vec::new(&env) };
+    let empty = BeneficiaryList {
+        splits: Vec::new(&env),
+    };
     assert!(client
         .try_set_beneficiary_list(&owner, &goal, &empty)
         .is_err());

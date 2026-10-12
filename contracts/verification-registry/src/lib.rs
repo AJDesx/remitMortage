@@ -168,8 +168,8 @@ impl VerificationRegistryContract {
         }
 
         let overdue = (elapsed - config.threshold_ledgers) as u64;
-        let points = overdue.saturating_mul(config.points_per_period as u64)
-            / config.period_ledgers as u64;
+        let points =
+            overdue.saturating_mul(config.points_per_period as u64) / config.period_ledgers as u64;
 
         points.min(100u64) as u32
     }
@@ -229,7 +229,9 @@ impl VerificationRegistryContract {
     }
 
     fn remove_appeal(env: &Env, borrower: &Address) {
-        env.storage().persistent().remove(&Self::appeal_key(borrower));
+        env.storage()
+            .persistent()
+            .remove(&Self::appeal_key(borrower));
     }
 
     fn read_rate_cap(env: &Env) -> u32 {
@@ -266,10 +268,7 @@ impl VerificationRegistryContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("init"),),
-            (admin,),
-        );
+        env.events().publish((symbol_short!("init"),), (admin,));
 
         Ok(())
     }
@@ -320,7 +319,13 @@ impl VerificationRegistryContract {
 
         env.events().publish(
             (symbol_short!("vreg"),),
-            (admin, borrower, score, verified_ledger, record.expiration_ledger),
+            (
+                admin,
+                borrower,
+                score,
+                verified_ledger,
+                record.expiration_ledger,
+            ),
         );
 
         Ok(())
@@ -350,7 +355,8 @@ impl VerificationRegistryContract {
     /// stops re-verifying gradually loses their favourable rate rather than
     /// holding it on the strength of a stale report.
     pub fn get_score(env: Env, borrower: Address) -> Result<u32, RegistryError> {
-        let record = Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
+        let record =
+            Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
         if env.ledger().sequence() > record.expiration_ledger {
             return Err(RegistryError::VerificationNotFound);
         }
@@ -362,7 +368,8 @@ impl VerificationRegistryContract {
     /// Useful for audits and for showing a borrower what re-verifying would
     /// restore them to.
     pub fn get_raw_score(env: Env, borrower: Address) -> Result<u32, RegistryError> {
-        let record = Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
+        let record =
+            Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
         if env.ledger().sequence() > record.expiration_ledger {
             return Err(RegistryError::VerificationNotFound);
         }
@@ -431,7 +438,12 @@ impl VerificationRegistryContract {
 
         env.events().publish(
             (symbol_short!("decaycfg"),),
-            (threshold_ledgers, points_per_period, period_ledgers, min_score),
+            (
+                threshold_ledgers,
+                points_per_period,
+                period_ledgers,
+                min_score,
+            ),
         );
 
         Ok(())
@@ -459,10 +471,8 @@ impl VerificationRegistryContract {
             .set(&DataKey::ProposedAdmin, &new_admin);
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("prop_adm"),),
-            (admin, new_admin),
-        );
+        env.events()
+            .publish((symbol_short!("prop_adm"),), (admin, new_admin));
 
         Ok(())
     }
@@ -485,10 +495,8 @@ impl VerificationRegistryContract {
         env.storage().instance().remove(&DataKey::ProposedAdmin);
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("acc_adm"),),
-            (proposed,),
-        );
+        env.events()
+            .publish((symbol_short!("acc_adm"),), (proposed,));
 
         Ok(())
     }
@@ -531,7 +539,13 @@ impl VerificationRegistryContract {
 
         env.events().publish(
             (symbol_short!("rate_cfg"),),
-            (admin, rate_excellent_bps, rate_good_bps, rate_fair_bps, rate_fallback_bps),
+            (
+                admin,
+                rate_excellent_bps,
+                rate_good_bps,
+                rate_fair_bps,
+                rate_fallback_bps,
+            ),
         );
 
         Ok(())
@@ -547,10 +561,10 @@ impl VerificationRegistryContract {
             .instance()
             .get(&DataKey::RateConfig)
             .unwrap_or(RateConfig {
-                rate_excellent_bps: 400,  // 4% APR
-                rate_good_bps: 600,        // 6% APR
-                rate_fair_bps: 800,        // 8% APR
-                rate_fallback_bps: 1200,   // 12% APR
+                rate_excellent_bps: 400, // 4% APR
+                rate_good_bps: 600,      // 6% APR
+                rate_fair_bps: 800,      // 8% APR
+                rate_fallback_bps: 1200, // 12% APR
             })
     }
 
@@ -560,11 +574,7 @@ impl VerificationRegistryContract {
     /// must be in the range 0–10000 bps. These limits are enforced in
     /// `set_rate_config` and `get_borrower_rate` so that no computed rate
     /// exceeds the configured boundaries.
-    pub fn set_rate_limits(
-        env: Env,
-        cap_bps: u32,
-        floor_bps: u32,
-    ) -> Result<(), RegistryError> {
+    pub fn set_rate_limits(env: Env, cap_bps: u32, floor_bps: u32) -> Result<(), RegistryError> {
         let admin = Self::read_admin(&env)?;
         admin.require_auth();
 
@@ -577,7 +587,9 @@ impl VerificationRegistryContract {
         }
 
         env.storage().instance().set(&DataKey::RateCap, &cap_bps);
-        env.storage().instance().set(&DataKey::RateFloor, &floor_bps);
+        env.storage()
+            .instance()
+            .set(&DataKey::RateFloor, &floor_bps);
         Self::bump_instance(&env);
 
         Ok(())
@@ -640,13 +652,13 @@ impl VerificationRegistryContract {
         let admin = Self::read_admin(&env)?;
         admin.require_auth();
 
-        env.storage().instance().set(&DataKey::LendingPool, &lending_pool);
+        env.storage()
+            .instance()
+            .set(&DataKey::LendingPool, &lending_pool);
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("set_lp"),),
-            (admin, lending_pool),
-        );
+        env.events()
+            .publish((symbol_short!("set_lp"),), (admin, lending_pool));
 
         Ok(())
     }
@@ -660,10 +672,8 @@ impl VerificationRegistryContract {
         env.storage().instance().set(&DataKey::Reviewer, &reviewer);
         Self::bump_instance(&env);
 
-        env.events().publish(
-            (symbol_short!("set_rev"),),
-            (admin, reviewer),
-        );
+        env.events()
+            .publish((symbol_short!("set_rev"),), (admin, reviewer));
 
         Ok(())
     }
@@ -675,6 +685,9 @@ impl VerificationRegistryContract {
         borrower: Address,
         was_on_time: bool,
     ) -> Result<RiskRecord, RegistryError> {
+        let lending_pool = Self::read_lending_pool(&env).ok_or(RegistryError::UnauthorizedPool)?;
+        lending_pool.require_auth();
+
         let mut profile = Self::read_risk_record(&env, &borrower)
             .unwrap_or_else(|| Self::seed_risk_from_score(70));
 
@@ -721,7 +734,8 @@ impl VerificationRegistryContract {
     pub fn appeal_score(env: Env, borrower: Address) -> Result<(), RegistryError> {
         borrower.require_auth();
 
-        let record = Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
+        let record =
+            Self::read_record(&env, &borrower).ok_or(RegistryError::VerificationNotFound)?;
         if env.ledger().sequence() > record.expiration_ledger {
             return Err(RegistryError::VerificationNotFound);
         }
@@ -854,14 +868,17 @@ mod test {
         let events = env.events().all();
         let last_event = events.last().unwrap();
 
-        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::vec![
-            &env,
-            symbol_short!("vreg").into_val(&env),
-        ];
+        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> =
+            soroban_sdk::vec![&env, symbol_short!("vreg").into_val(&env),];
         assert_eq!(last_event.1, expected_topic);
 
-        let (event_admin, event_borrower, event_score, event_ledger, event_expiry): (Address, Address, u32, u32, u32) =
-            last_event.2.into_val(&env);
+        let (event_admin, event_borrower, event_score, event_ledger, event_expiry): (
+            Address,
+            Address,
+            u32,
+            u32,
+            u32,
+        ) = last_event.2.into_val(&env);
         assert_eq!(event_admin, admin);
         assert_eq!(event_borrower, borrower);
         assert_eq!(event_score, 80u32);
@@ -1338,18 +1355,18 @@ mod test {
 
         let borrower = Address::generate(&env);
         let report_hash = BytesN::from_array(&env, &[13u8; 32]);
+        let lending_pool = Address::generate(&env);
 
         client.register_verification(&borrower, &report_hash, &1_000u32, &70u32);
+        client.set_lending_pool(&lending_pool);
 
         client.record_repayment_status(&borrower, &true);
 
         let events = env.events().all();
         let last_event = events.last().unwrap();
 
-        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::vec![
-            &env,
-            symbol_short!("risk_upd").into_val(&env),
-        ];
+        let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> =
+            soroban_sdk::vec![&env, symbol_short!("risk_upd").into_val(&env),];
         assert_eq!(last_event.1, expected_topic);
 
         let (event_borrower, old_score, new_score, was_on_time): (Address, u32, u32, bool) =
@@ -1626,7 +1643,12 @@ mod test {
         extend_decay_ttls(&env);
         let (_admin, client) = setup(&env);
 
-        client.set_decay_config(&(10 * LEDGERS_PER_DAY), &20u32, &(10 * LEDGERS_PER_DAY), &40u32);
+        client.set_decay_config(
+            &(10 * LEDGERS_PER_DAY),
+            &20u32,
+            &(10 * LEDGERS_PER_DAY),
+            &40u32,
+        );
 
         // Registered below the floor — decay must not promote them up to it.
         let borrower = Address::generate(&env);
@@ -1643,7 +1665,12 @@ mod test {
         extend_decay_ttls(&env);
         let (_admin, client) = setup(&env);
 
-        client.set_decay_config(&(10 * LEDGERS_PER_DAY), &0u32, &(10 * LEDGERS_PER_DAY), &0u32);
+        client.set_decay_config(
+            &(10 * LEDGERS_PER_DAY),
+            &0u32,
+            &(10 * LEDGERS_PER_DAY),
+            &0u32,
+        );
 
         let borrower = Address::generate(&env);
         register_for_decay(&env, &client, &borrower, 90);
@@ -1710,7 +1737,14 @@ mod test {
 
     // ── Score Appeal & Re-Review Workflow ───────────────────────────────
 
-    fn setup_with_appeal(env: &Env) -> (Address, VerificationRegistryContractClient<'static>, Address, Address) {
+    fn setup_with_appeal(
+        env: &Env,
+    ) -> (
+        Address,
+        VerificationRegistryContractClient<'static>,
+        Address,
+        Address,
+    ) {
         let (admin, client) = setup(env);
         let reviewer = Address::generate(env);
         client.set_reviewer(&reviewer);
@@ -1994,5 +2028,4 @@ mod test {
 
         assert!(result.is_err());
     }
-
 }

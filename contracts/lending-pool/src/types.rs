@@ -506,6 +506,38 @@ pub enum DataKey {
     PayoffQuote(BytesN<32>),
 }
 
+/// Storage keys for newer pool features.
+///
+/// Kept apart from [`DataKey`] because Soroban caps a `#[contracttype]` union
+/// at 50 cases and `DataKey` is already at that ceiling.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum FeatureKey {
+    /// Tranche seniority order the yield distribution waterfall processes
+    /// in. Absent under normal operation — the default `[Senior, Junior]` is
+    /// never written to storage by any current code path; this key exists
+    /// so tests can deliberately override it to simulate a misconfigured or
+    /// upgraded distribution routine and confirm the priority-order guard in
+    /// `repay` catches it. See `LendingPoolContract::assert_waterfall_priority_order`.
+    WaterfallOrder,
+    /// Ledger sequence of the most recent deposit for an investor address.
+    /// Absent until the investor makes their first deposit.
+    /// Used to enforce `deposit_cooldown_ledgers`.
+    InvestorLastDeposit(Address),
+    /// Rate-lock snapshot stored when `request_refinance` is called.
+    /// Cleared on successful `execute_refinance` or when superseded by a
+    /// new request.  Keyed by loan ID.
+    RefinanceRateLock(BytesN<32>),
+    /// Address of the Governance contract used to gate
+    /// `inject_emergency_liquidity`.  Absent until `set_governance_contract`
+    /// is called by the admin.
+    GovernanceContract,
+    /// Lifetime amount injected into the pool via `inject_emergency_liquidity`.
+    /// Tracked separately so it can be reconciled and repaid to the insurance
+    /// reserve as the pool recovers.
+    TotalEmergencyInjected,
+}
+
 /// A pending loan assumption request where an existing borrower proposes to transfer
 /// their loan obligations to a new borrower.
 #[contracttype]

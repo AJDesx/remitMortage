@@ -368,7 +368,8 @@ impl EscrowContract {
             // Matching is limited to the first deposit and the configured
             // reserve. A depleted reserve never changes the deposit result.
             let mut matched = 0i128;
-            if !record.released && !record.withdrawn && config.match_bps > 0 && config.match_cap > 0 {
+            if !record.released && !record.withdrawn && config.match_bps > 0 && config.match_cap > 0
+            {
                 let reserve = env
                     .storage()
                     .instance()
@@ -1026,10 +1027,8 @@ impl EscrowContract {
             .persistent()
             .remove(&DataKey::BeneficiaryList(borrower.clone(), goal_id.clone()));
         Self::owner_activity(&env, &borrower, &goal_id);
-        env.events().publish(
-            (symbol_short!("ben_list"), goal_id),
-            (borrower, 0u32),
-        );
+        env.events()
+            .publish((symbol_short!("ben_list"), goal_id), (borrower, 0u32));
         Self::extend_instance_ttl(&env);
         Ok(())
     }
@@ -1321,7 +1320,9 @@ impl EscrowContract {
             Self::set_borrower(&env, &borrower, &goal_id, &record);
             // `TotalPooled` tracks deposited principal only, not accrued yield.
             let new_total = Self::read_total_pooled(&env).saturating_sub(principal);
-            env.storage().instance().set(&DataKey::TotalPooled, &new_total);
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalPooled, &new_total);
 
             // ── 8. Distribute funds proportionally to each recipient ──────
             //

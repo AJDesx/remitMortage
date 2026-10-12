@@ -3,9 +3,7 @@
 
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env};
 
 /// Ledger constant for compound/year calculations (6 months = 518,400 ledgers, 1 year = 1,036,800 ledgers).
 const LEDGERS_PER_YEAR: u64 = 1_036_800;
@@ -112,11 +110,17 @@ impl YieldVaultContract {
     }
 
     fn read_queue_head(env: &Env) -> u64 {
-        env.storage().instance().get(&DataKey::QueueHead).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::QueueHead)
+            .unwrap_or(0)
     }
 
     fn read_queue_tail(env: &Env) -> u64 {
-        env.storage().instance().get(&DataKey::QueueTail).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::QueueTail)
+            .unwrap_or(0)
     }
 
     /// Transfers `amount` of the underlying token to `to`, minting the
@@ -190,11 +194,7 @@ impl YieldVaultContract {
             .instance()
             .get(&DataKey::TotalAssets)
             .unwrap_or(0);
-        let apy_bps: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ApyBps)
-            .unwrap_or(0);
+        let apy_bps: u32 = env.storage().instance().get(&DataKey::ApyBps).unwrap_or(0);
 
         if total_assets > 0 && apy_bps > 0 {
             // Per-period rate = (apy_bps / BPS_SCALE) * (COMPOUND_PERIOD / LEDGERS_PER_YEAR),
@@ -289,8 +289,7 @@ impl YieldVaultContract {
         let shares = if total_shares == 0 || total_assets == 0 {
             amount
         } else {
-            ((amount as u128).saturating_mul(total_shares as u128)
-                / total_assets as u128) as i128
+            ((amount as u128).saturating_mul(total_shares as u128) / total_assets as u128) as i128
         };
 
         if shares <= 0 {
@@ -321,14 +320,13 @@ impl YieldVaultContract {
             .persistent()
             .get(&DataKey::ShareBalance(from.clone()))
             .unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&DataKey::ShareBalance(from.clone()), &(caller_shares + shares));
-
-        env.events().publish(
-            (symbol_short!("deposit"), from.clone()),
-            (amount, shares),
+        env.storage().persistent().set(
+            &DataKey::ShareBalance(from.clone()),
+            &(caller_shares + shares),
         );
+
+        env.events()
+            .publish((symbol_short!("deposit"), from.clone()), (amount, shares));
 
         shares
     }
@@ -368,8 +366,8 @@ impl YieldVaultContract {
             panic!("insufficient vault shares");
         }
 
-        let amount = ((shares as u128).saturating_mul(total_assets as u128)
-            / total_shares as u128) as i128;
+        let amount =
+            ((shares as u128).saturating_mul(total_assets as u128) / total_shares as u128) as i128;
 
         let new_total_shares = total_shares - shares;
         let new_total_assets = total_assets - amount;
@@ -389,9 +387,10 @@ impl YieldVaultContract {
         if caller_shares < shares {
             panic!("insufficient share balance");
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::ShareBalance(to.clone()), &(caller_shares - shares));
+        env.storage().persistent().set(
+            &DataKey::ShareBalance(to.clone()),
+            &(caller_shares - shares),
+        );
 
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
@@ -399,7 +398,6 @@ impl YieldVaultContract {
         // Mint extra tokens directly to vault if vault balance is less than `amount` due to simulated interest
         let vault_balance = token_client.balance(&env.current_contract_address());
         if vault_balance < amount {
-            let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
             let sac = token::StellarAssetClient::new(&env, &token_addr);
             sac.mint(&env.current_contract_address(), &(amount - vault_balance));
         }
@@ -407,10 +405,8 @@ impl YieldVaultContract {
         // Transfer underlying token + yield from vault to recipient `to`
         token_client.transfer(&env.current_contract_address(), &to, &amount);
 
-        env.events().publish(
-            (symbol_short!("withdraw"), to.clone()),
-            (shares, amount),
-        );
+        env.events()
+            .publish((symbol_short!("withdraw"), to.clone()), (shares, amount));
 
         amount
     }
@@ -508,8 +504,8 @@ impl YieldVaultContract {
             panic!("insufficient share balance");
         }
 
-        let amount = ((shares as u128).saturating_mul(total_assets as u128)
-            / total_shares as u128) as i128;
+        let amount =
+            ((shares as u128).saturating_mul(total_assets as u128) / total_shares as u128) as i128;
 
         // Burn the shares now regardless of which path this takes — the
         // exchange rate is locked in at request time either way.
@@ -519,9 +515,10 @@ impl YieldVaultContract {
         env.storage()
             .instance()
             .set(&DataKey::TotalAssets, &(total_assets - amount));
-        env.storage()
-            .persistent()
-            .set(&DataKey::ShareBalance(to.clone()), &(caller_shares - shares));
+        env.storage().persistent().set(
+            &DataKey::ShareBalance(to.clone()),
+            &(caller_shares - shares),
+        );
 
         let threshold = Self::read_withdrawal_threshold(&env);
 
@@ -545,7 +542,9 @@ impl YieldVaultContract {
             amount,
             queued_ledger: env.ledger().sequence(),
         };
-        env.storage().persistent().set(&DataKey::QueueEntry(id), &entry);
+        env.storage()
+            .persistent()
+            .set(&DataKey::QueueEntry(id), &entry);
         env.storage().instance().set(&DataKey::QueueTail, &(id + 1));
 
         env.events()
@@ -568,10 +567,11 @@ impl YieldVaultContract {
         let mut fulfilled_count: u32 = 0;
 
         while head < tail {
-            let entry: QueuedWithdrawal = match env.storage().persistent().get(&DataKey::QueueEntry(head)) {
-                Some(e) => e,
-                None => break,
-            };
+            let entry: QueuedWithdrawal =
+                match env.storage().persistent().get(&DataKey::QueueEntry(head)) {
+                    Some(e) => e,
+                    None => break,
+                };
 
             if liquidity < entry.amount {
                 break;
@@ -580,7 +580,9 @@ impl YieldVaultContract {
             Self::pay_out(&env, &entry.requester, entry.amount);
             liquidity -= entry.amount;
 
-            env.storage().persistent().remove(&DataKey::QueueEntry(head));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::QueueEntry(head));
 
             env.events().publish(
                 (symbol_short!("w_fulfil"), entry.requester.clone()),
@@ -663,8 +665,7 @@ impl YieldVaultContract {
         if total_shares == 0 {
             shares
         } else {
-            ((shares as u128).saturating_mul(total_assets as u128)
-                / total_shares as u128) as i128
+            ((shares as u128).saturating_mul(total_assets as u128) / total_shares as u128) as i128
         }
     }
 }
@@ -672,7 +673,7 @@ impl YieldVaultContract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger};
+    use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
     use soroban_sdk::token::StellarAssetClient;
 
     /// 1 USDC in stroops (7 decimals).
@@ -697,6 +698,21 @@ mod test {
         client.initialize(&admin, &token, &apy_bps);
 
         (admin, token, client)
+    }
+
+    /// `deposit` credits available liquidity, so freshly deposited funds are
+    /// immediately payable. To exercise a queue that actually has to wait,
+    /// simulate the capital having been deployed out of the vault.
+    fn deploy_all_capital(env: &Env, client: &YieldVaultContractClient<'_>) {
+        env.as_contract(&client.address, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::AvailableLiquidity, &0i128);
+        });
+    }
+
+    fn token_balance(env: &Env, token: &Address, who: &Address) -> i128 {
+        soroban_sdk::token::Client::new(env, token).balance(who)
     }
 
     #[test]
@@ -880,7 +896,7 @@ mod test {
         assert_eq!(paid, 3_000 * USDC);
         assert_eq!(client.get_shares(&depositor), 0);
         assert_eq!(client.get_queue_length(), 0);
-        assert_eq!(token.balance(&depositor), 3_000 * USDC);
+        assert_eq!(token_balance(&env, &token, &depositor), 3_000 * USDC);
     }
 
     #[test]
@@ -902,7 +918,7 @@ mod test {
         // at today's exchange rate) rather than still redeemable elsewhere.
         assert_eq!(paid, 0);
         assert_eq!(client.get_shares(&depositor), 0);
-        assert_eq!(token.balance(&depositor), 0);
+        assert_eq!(token_balance(&env, &token, &depositor), 0);
 
         assert_eq!(client.get_queue_length(), 1);
         let entry = client.get_queued_withdrawal(&0).unwrap();
@@ -925,6 +941,7 @@ mod test {
         sac.mint(&bob, &(3_000 * USDC));
         client.deposit(&alice, &(4_000 * USDC));
         client.deposit(&bob, &(3_000 * USDC));
+        deploy_all_capital(&env, &client);
 
         // Both exceed the threshold and queue in deposit order.
         let alice_shares = client.get_shares(&alice);
@@ -938,8 +955,8 @@ mod test {
 
         assert_eq!(fulfilled, 2);
         assert_eq!(client.get_queue_length(), 0);
-        assert_eq!(token.balance(&alice), 4_000 * USDC);
-        assert_eq!(token.balance(&bob), 3_000 * USDC);
+        assert_eq!(token_balance(&env, &token, &alice), 4_000 * USDC);
+        assert_eq!(token_balance(&env, &token, &bob), 3_000 * USDC);
         assert_eq!(client.get_available_liquidity(), 0);
     }
 
@@ -957,6 +974,7 @@ mod test {
         sac.mint(&bob, &(3_000 * USDC));
         client.deposit(&alice, &(8_000 * USDC));
         client.deposit(&bob, &(3_000 * USDC));
+        deploy_all_capital(&env, &client);
 
         // Alice queues first (front of the queue) for more than the
         // liquidity that will be available; Bob queues second for less.
@@ -975,8 +993,8 @@ mod test {
         // advances from the front.
         assert_eq!(fulfilled, 0);
         assert_eq!(client.get_queue_length(), 2);
-        assert_eq!(token.balance(&alice), 0);
-        assert_eq!(token.balance(&bob), 0);
+        assert_eq!(token_balance(&env, &token, &alice), 0);
+        assert_eq!(token_balance(&env, &token, &bob), 0);
         assert!(client.get_queued_withdrawal(&0).is_some());
         assert!(client.get_queued_withdrawal(&1).is_some());
 
@@ -989,8 +1007,8 @@ mod test {
         // liquidity to reach him yet.
         assert_eq!(fulfilled, 1);
         assert_eq!(client.get_queue_length(), 1);
-        assert_eq!(token.balance(&alice), 8_000 * USDC);
-        assert_eq!(token.balance(&bob), 0);
+        assert_eq!(token_balance(&env, &token, &alice), 8_000 * USDC);
+        assert_eq!(token_balance(&env, &token, &bob), 0);
         assert!(client.get_queued_withdrawal(&0).is_none());
         assert!(client.get_queued_withdrawal(&1).is_some());
 
@@ -1000,7 +1018,7 @@ mod test {
 
         assert_eq!(fulfilled, 1);
         assert_eq!(client.get_queue_length(), 0);
-        assert_eq!(token.balance(&bob), 3_000 * USDC);
+        assert_eq!(token_balance(&env, &token, &bob), 3_000 * USDC);
     }
 
     #[test]

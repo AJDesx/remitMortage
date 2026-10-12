@@ -56,4 +56,3 @@ pub enum BridgeError {
     /// Unsupported cross-chain message version.
     UnsupportedVersion = 16,
 }
-

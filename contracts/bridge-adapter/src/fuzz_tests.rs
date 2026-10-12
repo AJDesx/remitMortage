@@ -9,7 +9,6 @@
 #![cfg(test)]
 extern crate std;
 
-use std::vec::Vec;
 use crate::{
     message::{
         InboundBridgeMessage, MessagePayloadType, BRIDGE_MAGIC, CURRENT_VERSION,
@@ -29,8 +28,12 @@ prop_compose! {
         sender in prop::array::uniform32(any::<u8>()),
         recipient in prop::array::uniform32(1u8..=255u8), // non-zero
         extra_len in 0usize..=MAX_EXTRA_DATA_LEN,
-        extra_data in prop::array::uniform64(any::<u8>()),
+        extra_lo in prop::array::uniform32(any::<u8>()),
+        extra_hi in prop::array::uniform32(any::<u8>()),
     ) -> InboundBridgeMessage {
+        let mut extra_data = [0u8; 64];
+        extra_data[..32].copy_from_slice(&extra_lo);
+        extra_data[32..].copy_from_slice(&extra_hi);
         InboundBridgeMessage {
             version: CURRENT_VERSION,
             payload_type: MessagePayloadType::from_u8(payload_type_u8).unwrap(),
@@ -87,7 +90,7 @@ proptest! {
     ) {
         let mut buf = [0u8; 256];
         let encoded_len = msg.encode(&mut buf).expect("encoding valid message should succeed");
-        
+
         let target_len = truncation_offset.min(encoded_len.saturating_sub(1));
         let truncated = &buf[..target_len];
 

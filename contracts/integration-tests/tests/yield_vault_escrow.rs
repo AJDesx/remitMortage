@@ -5,12 +5,12 @@
 //! upon withdrawal/release, the total returned amount includes the accrued yield.
 
 use escrow::{EscrowConfig, EscrowContract, EscrowContractClient};
-use yield_vault::{YieldVaultContract, YieldVaultContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, Symbol,
 };
+use yield_vault::{YieldVaultContract, YieldVaultContractClient};
 
 /// 1 USDC in stroops (7 decimals).
 const USDC: i128 = 10_000_000;
@@ -104,7 +104,10 @@ fn test_escrow_deposit_and_withdrawal_with_yield_vault() {
 
     // Check borrower token balance is 0 and Vault has the deposited USDC
     assert_eq!(setup.token_client.balance(&borrower), 0);
-    assert_eq!(setup.token_client.balance(&setup.vault.address), deposit_amount);
+    assert_eq!(
+        setup.token_client.balance(&setup.vault.address),
+        deposit_amount
+    );
 
     // Verify vault shares were minted
     let vault_shares = setup.vault.get_shares(&setup.escrow.address);
@@ -117,7 +120,10 @@ fn test_escrow_deposit_and_withdrawal_with_yield_vault() {
 
     // Calculate expected 6-month yield (5% / 2 = 2.5% yield = ~250 USDC)
     let total_assets_after = setup.vault.get_total_assets();
-    assert!(total_assets_after > deposit_amount, "Yield should have accrued in vault");
+    assert!(
+        total_assets_after > deposit_amount,
+        "Yield should have accrued in vault"
+    );
 
     let borrower_balance_before = setup.token_client.balance(&borrower);
 
@@ -128,7 +134,10 @@ fn test_escrow_deposit_and_withdrawal_with_yield_vault() {
 
     // Assert borrower received principal + accrued yield
     assert_eq!(amount_withdrawn, total_assets_after);
-    assert_eq!(borrower_balance_after - borrower_balance_before, total_assets_after);
+    assert_eq!(
+        borrower_balance_after - borrower_balance_before,
+        total_assets_after
+    );
     assert!(
         amount_withdrawn > deposit_amount,
         "Total withdrawn amount must include simulated yield"
