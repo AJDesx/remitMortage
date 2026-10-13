@@ -6,6 +6,9 @@ import dynamic from "next/dynamic";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { getProductTourStore } from "@/hooks/useProductTourState";
 import { useThemeStore } from "@/app/stores/useThemeStore";
+import NotificationFrequencyControl, {
+  type NotificationFrequency,
+} from "@/components/NotificationFrequencyControl";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 // Push relies on browser-only APIs (ServiceWorker, PushManager, Notification),

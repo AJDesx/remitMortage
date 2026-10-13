@@ -2,7 +2,7 @@
 // Copyright (c) 2026 RemitMortgage Protocol Contributors
 // SPDX-License-Identifier: MIT
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useForm, useWatch, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -10,6 +10,8 @@ import { getOnboardingStore, useOnboardingState } from "@/hooks/useOnboardingSta
 import { useFormAutosave } from "@/hooks/useFormAutosave";
 import { onboardingSchema, STEP_FIELDS, type OnboardingFormValues } from "@/lib/onboardingSchema";
 import ProgressStepper from "./ProgressStepper";
+import DocumentChecklist from "./DocumentChecklist";
+import type { LoanType } from "@/lib/document-checklist";
 import { toast } from "react-hot-toast";
 import { useWallet } from "@/context/WalletContext";
 import {

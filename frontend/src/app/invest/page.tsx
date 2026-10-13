@@ -15,6 +15,10 @@ import { SubmitProposalModal } from "../../components/governance/SubmitProposalM
 import { QuorumProgressBar } from "../../components/governance/QuorumProgressBar";
 import { track } from "../../lib/analytics";
 import InvestorWatchlist from "../../components/InvestorWatchlist";
+import PortfolioBreakdownChart from "../../components/PortfolioBreakdownChart";
+import InvestorRebalancingSuggestions from "../../components/investor/InvestorRebalancingSuggestions";
+import { computeConcentrationMetrics, type TrancheHolding } from "../../lib/investorRebalancing";
+import { useImpersonation } from "../../hooks/useImpersonation";
 
 type Tranche = "Senior" | "Junior";
 

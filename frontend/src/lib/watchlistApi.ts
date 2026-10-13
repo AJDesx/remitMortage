@@ -25,13 +25,15 @@ export interface WatchlistItem {
 export async function fetchUpcomingOfferings(): Promise<UpcomingOffering[]> {
   const res = await fetch(`${API_BASE}/api/watchlist/upcoming`, { credentials: "include" });
   if (!res.ok) throw new Error("Failed to load upcoming offerings");
-  return (await res.json()).offerings;
+  const body = await res.json();
+  return Array.isArray(body?.offerings) ? body.offerings : [];
 }
 
 export async function fetchWatchlist(): Promise<WatchlistItem[]> {
   const res = await fetch(`${API_BASE}/api/watchlist`, { credentials: "include" });
   if (!res.ok) throw new Error("Failed to load watchlist");
-  return (await res.json()).watchlist;
+  const body = await res.json();
+  return Array.isArray(body?.watchlist) ? body.watchlist : [];
 }
 
 export async function watchOffering(loanId: string): Promise<void> {

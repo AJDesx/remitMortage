@@ -8,6 +8,8 @@ import toast, { Toaster } from "react-hot-toast";
 import { useWallet, OptionalWalletProvider } from "../../context/WalletContext";
 import { EmptyState } from "../../components/EmptyState";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
+import { useImpersonation } from "../../hooks/useImpersonation";
+import { startImpersonation } from "../../lib/impersonationApi";
 import { ClipboardList, Hammer, History, MessagesSquare } from "lucide-react";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
@@ -297,12 +299,14 @@ function AdminDashboard() {
             onApprove={(loan) => setPendingAction({ kind: "approve-loan", loan })}
             onReject={(loan) => setPendingAction({ kind: "reject-loan", loan })}
             onRefresh={loadData}
+            isReadOnly={isReadOnly}
           />
         ) : tab === "milestones" ? (
           <MilestoneReviewsTab
             milestones={milestones}
             loading={loading}
             onApprove={(milestone) => setPendingAction({ kind: "approve-milestone", milestone })}
+            isReadOnly={isReadOnly}
           />
         ) : tab === "audit" ? (
           <AuditLogViewer />
@@ -748,6 +752,8 @@ function PendingLoansTab({
           </div>
         );
       })}
+        </>
+      )}
 
       {/* Sticky Bulk Action Toolbar */}
       {selectedIds.size > 0 && (
