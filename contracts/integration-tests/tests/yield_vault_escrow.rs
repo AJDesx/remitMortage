@@ -29,7 +29,8 @@ struct TestSetup<'a> {
 }
 
 fn setup_protocol<'a>(env: &'a Env, apy_bps: u32) -> TestSetup<'a> {
-    env.mock_all_auths();
+    // `withdraw` mints simulated yield via the token admin (a non-root auth).
+    env.mock_all_auths_allowing_non_root_auth();
 
     env.ledger().with_mut(|li| {
         li.min_persistent_entry_ttl = 3_000_000;
@@ -69,9 +70,14 @@ fn setup_protocol<'a>(env: &'a Env, apy_bps: u32) -> TestSetup<'a> {
         penalty_bps_tier4: 0,
         grace_period_ledgers: 120_960,
         default_penalty_bps: 1_000,
+        instance_bump_amount: 518_400,
+        instance_lifetime_threshold: 129_600,
+        persistent_bump_amount: 518_400,
+        persistent_lifetime_threshold: 129_600,
         yield_vault: Some(vault_id.clone()),
         match_bps: 0,
         match_cap: 0,
+        permissioned_mode: false,
     };
     escrow.initialize(&config);
 
@@ -100,7 +106,7 @@ fn test_escrow_deposit_and_withdrawal_with_yield_vault() {
 
     // Borrower deposits into Escrow (which routes to Yield Vault)
     let goal_id = Symbol::new(&env, "house_downpayment");
-    setup.escrow.deposit(&borrower, &deposit_amount, &goal_id);
+    setup.escrow.deposit(&borrower, &goal_id, &deposit_amount);
 
     // Check borrower token balance is 0 and Vault has the deposited USDC
     assert_eq!(setup.token_client.balance(&borrower), 0);
@@ -158,7 +164,7 @@ fn test_proportional_share_minting_multi_deposit() {
     setup.sac.mint(&borrower2, &(10_000 * USDC));
 
     // Borrower 1 deposits 10,000 USDC
-    setup.escrow.deposit(&borrower1, &(10_000 * USDC), &goal1);
+    setup.escrow.deposit(&borrower1, &goal1, &(10_000 * USDC));
     let shares1 = setup.vault.get_shares(&setup.escrow.address);
     assert_eq!(shares1, 10_000 * USDC);
 
@@ -168,7 +174,7 @@ fn test_proportional_share_minting_multi_deposit() {
     });
 
     // Borrower 2 deposits 10,000 USDC after yield accrued
-    setup.escrow.deposit(&borrower2, &(10_000 * USDC), &goal2);
+    setup.escrow.deposit(&borrower2, &goal2, &(10_000 * USDC));
 
     let total_shares = setup.vault.get_shares(&setup.escrow.address);
     let shares2 = total_shares - shares1;
