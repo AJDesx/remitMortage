@@ -18,6 +18,7 @@ import {
 import { decryptBuffer } from "../services/kmsEncryption.js";
 import { issueKycAccessToken, verifyKycAccessToken } from "../services/kycAccessToken.js";
 import { extractKycFields } from "../services/ocrService.js";
+import { analyzeAndRecordDocument } from "../services/kycDocumentForensics.js";
 import { verifyEmployment, getEmploymentVerificationStatus } from "../services/employmentVerification.js";
 import {
   createOcrResult,
@@ -182,6 +183,15 @@ kycRouter.post(
         res.status(400).json({
           error: "invalid_file_type",
           message: "Only PDF, JPEG, and PNG documents are accepted.",
+        });
+        return;
+      }
+
+      const documentType = String(req.body?.documentType ?? "");
+      if (!KYC_DOCUMENT_TYPES.has(documentType)) {
+        res.status(400).json({
+          error: "invalid_document_type",
+          message: "A supported documentType is required.",
         });
         return;
       }

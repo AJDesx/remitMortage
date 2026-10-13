@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Request, Response, NextFunction } from "express";
+import jwt from "jsonwebtoken";
 import { verifySessionToken } from "../services/jwtKeyRing.js";
 import { loadConfig } from "../config.js";
 import { IMPERSONATION_COOKIE, isImpersonationSessionActive } from "../services/impersonation.js";

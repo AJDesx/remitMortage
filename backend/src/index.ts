@@ -77,6 +77,10 @@ import { notFoundHandler } from "./middleware/notFound.js";
 import { startEventListener } from "./services/eventListener.js";
 import { startNotificationScheduler } from "./services/notification.js";
 import { startScheduler } from "./jobs/scheduler.js";
+import {
+  startIpfsOrphanCleanupScheduler,
+  stopIpfsOrphanCleanupScheduler,
+} from "./jobs/ipfsOrphanCleanup.js";
 import { startBackupScheduler, startBackupCleanupScheduler } from "./jobs/backupScheduler.js";
 import { startWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
 import { startWebhookAutoDisableScheduler, stopWebhookAutoDisableScheduler } from "./jobs/webhookAutoDisable.js";
@@ -327,6 +331,7 @@ app.listen(PORT, () => {
   startBackupScheduler();
   startBackupCleanupScheduler();
   startWebhookKeyRotationScheduler();
+  startIpfsOrphanCleanupScheduler();
   startWebhookAutoDisableScheduler();
   startSecretsRotationScheduler();
   startJwtKeyRotationScheduler();

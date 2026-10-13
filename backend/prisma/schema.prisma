@@ -1087,6 +1087,8 @@ model TableBloatSnapshot {
 
   @@index([capturedAt])
   @@index([tableName, capturedAt])
+}
+
 /// Hardship late-fee waiver request workflow (issue #749).
 ///
 /// A borrower facing genuine hardship (job loss, medical emergency, etc.)

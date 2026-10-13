@@ -176,7 +176,11 @@ async function handleMissedPayment(
   }
 }
 
-async function handleDefault(loanId: string, applicantId: string) {
+async function handleDefault(
+  loanId: string,
+  applicantId: string,
+  guarantorAddress: string | null
+) {
   await prisma.loanApplication.update({ where: { id: loanId }, data: { status: "DEFAULTED", gracePeriodEndsAt: null } });
   
   const applicant = await prisma.applicant.findUnique({ where: { id: applicantId } });

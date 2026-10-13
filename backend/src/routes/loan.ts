@@ -16,6 +16,7 @@ import {
   discardDraftApplication,
   escrowTargetMetForAmount,
 } from "../services/loanStore.js";
+import { applyAutoRejectionIfNeeded } from "../services/autoRejectionRuleStore.js";
 import {
   verifyStellarGuarantorSignature,
   buildGuarantorCommitment,

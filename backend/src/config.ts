@@ -160,6 +160,14 @@ export interface Config {
   webhookLatencyWindowMinutes: number;
   /** Raw white-label tenant records from TENANT_BRANDING (validated in services/tenant.ts). */
   tenantBranding: unknown[];
+  /** Whether the usage analytics pipeline records events (ANALYTICS_ENABLED !== "false"). */
+  analyticsEnabled: boolean;
+  /** Consecutive fully-failed dispatch cycles before a webhook subscription is auto-paused. */
+  webhookAutoDisableFailureThreshold: number;
+  /** How long (ms) a subscription must be failing continuously before it is auto-paused. */
+  webhookAutoDisableStaleAfterMs: number;
+  /** Optional email notified when a webhook subscription is auto-paused. */
+  webhookAutoDisableNotifyEmail: string | null;
 }
 
 /** Parses APPLICATION_SLA_HOURS (a JSON map of status -> SLA hours). */
@@ -362,5 +370,25 @@ export function loadConfig(): Config {
     webhookLatencySlaMs: parseInt(process.env.WEBHOOK_LATENCY_SLA_MS || "5000", 10),
     webhookLatencyWindowMinutes: parseInt(process.env.WEBHOOK_LATENCY_WINDOW_MINUTES || "60", 10),
     tenantBranding: parseTenantBranding(process.env.TENANT_BRANDING),
+    complianceAlertEmail:
+      process.env.COMPLIANCE_ALERT_EMAIL ||
+      process.env.OPS_FALLBACK_ALERT_EMAIL ||
+      process.env.ALERT_DEFAULT_RECIPIENT ||
+      "compliance@remitmortgage.com",
+    complianceSlackWebhookUrl:
+      process.env.COMPLIANCE_SLACK_WEBHOOK_URL ||
+      process.env.OPS_SLACK_WEBHOOK_URL ||
+      process.env.SLACK_WEBHOOK_URL ||
+      null,
+    analyticsEnabled: process.env.ANALYTICS_ENABLED !== "false",
+    webhookAutoDisableFailureThreshold: parseInt(
+      process.env.WEBHOOK_AUTO_DISABLE_FAILURE_THRESHOLD || "20",
+      10
+    ),
+    webhookAutoDisableStaleAfterMs: parseInt(
+      process.env.WEBHOOK_AUTO_DISABLE_STALE_AFTER_MS || "259200000",
+      10
+    ),
+    webhookAutoDisableNotifyEmail: process.env.WEBHOOK_AUTO_DISABLE_NOTIFY_EMAIL || null,
   };
 }

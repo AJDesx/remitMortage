@@ -492,7 +492,7 @@ function analyzePng(buf: Buffer): ForensicSignal[] {
   let off = 8;
   let exif: ExifData | undefined;
   const xmpBlocks: string[] = [];
-  let trailing = Buffer.alloc(0);
+  let trailing: Buffer = Buffer.alloc(0);
 
   while (off + 12 <= buf.length) {
     const length = buf.readUInt32BE(off);

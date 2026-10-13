@@ -238,6 +238,7 @@ export function stopScheduler() {
   if (tableBloatMonitorTask) {
     tableBloatMonitorTask.stop();
     tableBloatMonitorTask = null;
+  }
   if (queryKillerTask) {
     queryKillerTask.stop();
     queryKillerTask = null;

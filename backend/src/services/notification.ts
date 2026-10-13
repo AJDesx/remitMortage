@@ -1,7 +1,12 @@
 // Copyright (c) 2026 RemitMortgage Protocol Contributors
 // SPDX-License-Identifier: MIT
 
-import { prisma, getNotificationPreference } from "./db.js";
+import { prisma, getNotificationPreference, type NotificationFrequency } from "./db.js";
+import {
+  getCommunicationPreferences,
+  type CommunicationCategory,
+  type CommunicationChannel,
+} from "./communicationPreferences.js";
 import logger from "../utils/logger.js";
 import { sendEmail, sendDepositReceipt, sendRepaymentReminder, sendLoanStatusUpdate } from "./email.js";
 import { sendWebhook } from "./webhook.js";
@@ -362,6 +367,20 @@ export type MaturityAlertEventType =
   | "SECURITY_ALERT";
 
 /**
+ * Maps each event type to the fine-grained per-category, per-channel opt-in
+ * matrix category governing it. PAYMENT_MISSED has no entry — it hasn't been
+ * migrated off the coarser emailAlerts/smsAlerts global toggles, which
+ * dispatchMaturityAlerts falls back to for any event type absent here.
+ */
+const COMMUNICATION_CATEGORY_BY_EVENT: Partial<Record<MaturityAlertEventType, CommunicationCategory>> = {
+  ESCROW_APPROACHING: "DEPOSITS",
+  ESCROW_REACHED: "DEPOSITS",
+  MILESTONE_UPDATE: "MILESTONES",
+  GOVERNANCE_PROPOSAL: "GOVERNANCE",
+  SECURITY_ALERT: "SECURITY",
+};
+
+/**
  * Maps each event type to the NotificationPreference field governing its
  * delivery cadence. SECURITY_ALERT is intentionally absent — it never
  * consults a stored frequency (see the `isSecurity` branch below), so there
@@ -474,9 +493,22 @@ export async function dispatchMaturityAlerts(
         ? computeBusinessHoursDelay(preferences, isUrgent)
         : computeDigestDelay(preferences, frequency);
 
-  // Note: the emailAlerts/smsAlerts channel toggles below still apply even to
-  // security alerts — "always immediate" governs *timing*, not whether the
-  // user has that delivery channel switched on at all.
+  // For the four categories with a fine-grained opt-in matrix, that matrix
+  // decides whether each channel is attempted at all — independently per
+  // category, which is the whole point of the preference center (disabling
+  // SMS for deposits must not touch email/push, or SMS for any other
+  // category). PAYMENT_MISSED isn't in that matrix yet, so it keeps using the
+  // coarser emailAlerts/smsAlerts global toggles, unchanged.
+  const communicationCategory = COMMUNICATION_CATEGORY_BY_EVENT[event.type];
+  const channelMatrix = communicationCategory ? await getCommunicationPreferences(applicantAddress) : null;
+
+  function channelEnabled(channel: CommunicationChannel, legacyToggle: boolean): boolean {
+    if (communicationCategory && channelMatrix) {
+      return channelMatrix[communicationCategory][channel].enabled;
+    }
+    return legacyToggle;
+  }
+
   const dispatches: Promise<any>[] = [];
 
   if (email && channelEnabled("EMAIL", Boolean(emailAlerts))) {

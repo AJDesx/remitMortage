@@ -6,6 +6,7 @@ import logger from "../utils/logger.js";
 import { loadConfig } from "../config.js";
 import { getCurrentTenant, type TenantBranding } from "./tenant.js";
 import { isEmailSuppressed } from "./emailSuppression.js";
+import { getEmailTranslator } from "../i18n/emailI18n.js";
 
 const config = loadConfig();
 
@@ -174,7 +175,13 @@ export async function sendEmail(to: string, subject: string, htmlContent: string
  * Sends a branded Deposit Receipt HTML email.
  * @param locale - BCP-47 locale tag from the recipient's stored preference.
  */
-export async function sendDepositReceipt(to: string, amount: string, transactionId: string): Promise<boolean> {
+export async function sendDepositReceipt(
+  to: string,
+  amount: string,
+  transactionId: string,
+  locale?: string
+): Promise<boolean> {
+  const t = getEmailTranslator(locale);
   const subject = `Deposit Receipt - ${getCurrentTenant().name}`;
   const body = `
     <h2>${t("deposit_heading")}</h2>
@@ -195,14 +202,20 @@ export async function sendDepositReceipt(to: string, amount: string, transaction
     </table>
     <p>${t("deposit_footer_note")}</p>
   `;
-  return sendEmail(to, subject, getBrandedHtml(subject, body, locale));
+  return sendEmail(to, subject, getBrandedHtml(subject, body));
 }
 
 /**
  * Sends a branded Repayment Reminder HTML email.
  * @param locale - BCP-47 locale tag from the recipient's stored preference.
  */
-export async function sendRepaymentReminder(to: string, amount: string, dueDate: string): Promise<boolean> {
+export async function sendRepaymentReminder(
+  to: string,
+  amount: string,
+  dueDate: string,
+  locale?: string
+): Promise<boolean> {
+  const t = getEmailTranslator(locale);
   const subject = `Repayment Reminder - ${getCurrentTenant().name}`;
   const body = `
     <h2>${t("repayment_heading")}</h2>
@@ -220,7 +233,7 @@ export async function sendRepaymentReminder(to: string, amount: string, dueDate:
     <p>${t("repayment_warning")}</p>
     <a href="#" class="cta-button">${t("repayment_cta")}</a>
   `;
-  return sendEmail(to, subject, getBrandedHtml(subject, body, locale));
+  return sendEmail(to, subject, getBrandedHtml(subject, body));
 }
 
 /**
@@ -254,7 +267,7 @@ export async function sendLoanStatusUpdate(
     </table>
     <p>${t("loan_status_footer_note")}</p>
   `;
-  return sendEmail(to, subject, getBrandedHtml(subject, body, locale));
+  return sendEmail(to, subject, getBrandedHtml(subject, body));
 }
 
 /**

@@ -138,13 +138,46 @@ function createPrismaClient(url: string | undefined): any {
   return client;
 }
 
-export const prisma = createPrismaClient(dbUrl);
+let activeDbUrl = dbUrl;
+export let prisma = createPrismaClient(dbUrl);
 export const readReplicaPrisma =
   replicaUrl && buildDatabaseUrl({ ...process.env, DATABASE_URL: replicaUrl })
     ? createPrismaClient(buildDatabaseUrl({ ...process.env, DATABASE_URL: replicaUrl }))
     : prisma;
 
 export const READ_REPLICA_LAG_THRESHOLD_SECONDS = lagThresholdSeconds;
+
+/**
+ * Refresh the primary database pool after a Secrets Manager rotation.
+ * The replacement is health-checked before the exported client is swapped;
+ * the old pool then drains for the configured grace period.
+ */
+export async function refreshDatabaseCredentials(): Promise<void> {
+  const secretId = configuredSecretId("DATABASE_SECRET_ID");
+  if (!secretId) return;
+
+  const secret = await secrets.getJson(secretId, true);
+  const rawUrl = secret.databaseUrl ?? secret.url ?? secret.value;
+  if (!rawUrl) throw new Error(`Secret ${secretId} does not contain databaseUrl`);
+
+  const nextUrl = buildDatabaseUrl({ ...process.env, DATABASE_URL: rawUrl });
+  if (!nextUrl || nextUrl === activeDbUrl) return;
+
+  const nextClient = createPrismaClient(nextUrl);
+  await nextClient.$queryRaw`SELECT 1`;
+  const previousClient = prisma;
+  prisma = nextClient;
+  activeDbUrl = nextUrl;
+
+  const drainMs = Number(process.env.DB_ROTATION_DRAIN_MS || 30_000);
+  setTimeout(
+    () => {
+      void previousClient.$disconnect().catch(() => undefined);
+    },
+    Number.isFinite(drainMs) && drainMs >= 0 ? drainMs : 30_000
+  ).unref();
+}
+
 
 export async function getReadReplicaLagSeconds(): Promise<number | null> {
   if (!replicaUrl || readReplicaPrisma === prisma) {
@@ -469,6 +502,27 @@ export async function getApplicant(stellarAddress: string) {
       notificationPreference: true,
     },
   });
+  return decryptApplicant(applicant);
+}
+
+/** Mailing address + verification metadata only, decrypted. Null if the applicant has never submitted one. */
+export async function getApplicantAddress(stellarAddress: string) {
+  const applicant = await prisma.applicant.findFirst({
+    where: { stellarAddress, deletedAt: null },
+    select: {
+      addressLine1: true,
+      addressLine2: true,
+      addressCity: true,
+      addressState: true,
+      addressPostalCode: true,
+      addressCountry: true,
+      addressVerificationStatus: true,
+      addressVerificationDetail: true,
+      addressVerifiedAt: true,
+      addressProviderReference: true,
+    },
+  });
+  if (!applicant || !applicant.addressVerificationStatus) return null;
   return decryptApplicant(applicant);
 }
 

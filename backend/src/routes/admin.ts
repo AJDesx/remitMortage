@@ -34,6 +34,12 @@ import {
   reviewFlaggedDocument,
 } from "../services/kycDocumentForensics.js";
 import { loadConfig } from "../config.js";
+import {
+  getModelConfig,
+  getShadowEvaluations,
+  getShadowMetrics,
+  updateModelConfig,
+} from "../services/scoring.js";
 
 export const adminRouter = Router();
 

@@ -113,7 +113,9 @@ export async function updateCommunicationPreferences(
   const existingRows = await prisma.communicationPreference.findMany({
     where: { applicantId: applicant.id },
   });
-  const existingByKey = new Map(existingRows.map((row) => [`${row.category}:${row.channel}`, row]));
+  const existingByKey = new Map<string, any>(
+    existingRows.map((row: any): [string, any] => [`${row.category}:${row.channel}`, row])
+  );
 
   for (const update of updates) {
     const existing = existingByKey.get(`${update.category}:${update.channel}`);
