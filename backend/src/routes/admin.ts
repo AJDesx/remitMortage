@@ -36,6 +36,8 @@ import {
   FourEyesError,
 } from "../services/fourEyesApproval.js";
 import { requiresFourEyesApproval } from "../services/fourEyesPolicy.js";
+import { DEPRECATED_ENDPOINTS } from "../middleware/apiVersioning.js";
+import { httpRequestsByVersionTotal } from "../services/metrics.js";
 import { loadConfig } from "../config.js";
 
 export const adminRouter = Router();
@@ -694,5 +696,29 @@ adminRouter.post("/scoring/models", requireAdmin, async (req: AuthenticatedReque
   } catch (error) {
     logger.error("Failed to update scoring model configuration", { error });
     return res.status(500).json({ error: "failed_to_update_scoring_models" });
+  }
+});
+
+// ── API versioning visibility (issue #847) ───────────────────────────────
+// So a retirement decision for an old API version is data-driven rather
+// than a guess, and so deprecated endpoints are discoverable without
+// grepping the codebase. See docs/API_VERSIONING_POLICY.md.
+
+adminRouter.get("/api-versions/usage", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const metric = await httpRequestsByVersionTotal.get();
+    const byVersion: Record<string, number> = {};
+    for (const entry of metric.values) {
+      const version = String(entry.labels.version ?? "unknown");
+      byVersion[version] = (byVersion[version] ?? 0) + entry.value;
+    }
+
+    return res.json({
+      requestsByVersion: byVersion,
+      deprecatedEndpoints: DEPRECATED_ENDPOINTS,
+    });
+  } catch (error) {
+    logger.error("API version usage report error", { error });
+    return res.status(500).json({ error: "failed_to_load_version_usage" });
   }
 });
