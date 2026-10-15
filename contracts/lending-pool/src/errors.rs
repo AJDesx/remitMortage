@@ -83,7 +83,9 @@ pub enum PoolError {
     /// Origination fee exceeds the full-disbursement ceiling.
     OriginationFeeTooHigh = 45,
     /// Borrower already holds the maximum number of active loans permitted by
-    /// `max_active_loans_per_borrower`.
+    /// `max_active_loans_per_borrower`, or the loan would push their aggregate
+    /// outstanding principal past the configured exposure cap. (The error enum
+    /// is at Soroban's 50-variant ceiling, so both limits share this code.)
     BorrowerLoanCapExceeded = 46,
     /// Refinancing request was submitted before the cooldown window elapsed.
     RefinanceCooldownActive = 47,

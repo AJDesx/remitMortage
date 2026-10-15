@@ -18,7 +18,7 @@ mod test_loan_assumption;
 pub use crate::errors::{LoanAssumptionError, PoolError};
 pub use crate::types::{
     BatchDisburseItem, DataKey, FeatureKey, HalvingInfo, InvestorRecord, LoanAssumptionRequest,
-    LoanCollateralRecord, LoanPortabilitySnapshot, LoanRecord, LoanStatus, PayoffQuote,
+    LoanCollateralRecord, LoanPortabilitySnapshot, LoanRecord, LoanStatus, PauseGroup, PayoffQuote,
     PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche,
     TrancheInfo,
 };
@@ -682,6 +682,77 @@ impl LendingPoolContract {
         Self::set_borrower_active_loans(env, borrower, current.saturating_sub(1));
     }
 
+    // ── Per-Borrower Aggregate Exposure Helpers ──────────────────────────
+
+    fn read_borrower_exposure(env: &Env, borrower: &Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&FeatureKey::BorrowerExposure(borrower.clone()))
+            .unwrap_or(0)
+    }
+
+    fn set_borrower_exposure(env: &Env, borrower: &Address, amount: i128) {
+        let key = FeatureKey::BorrowerExposure(borrower.clone());
+        if amount <= 0 {
+            env.storage().persistent().remove(&key);
+        } else {
+            env.storage().persistent().set(&key, &amount);
+        }
+    }
+
+    /// The tightest exposure ceiling currently in force, or `None` when no cap
+    /// is configured. The absolute and percentage caps are both honoured: when
+    /// both are set the lower one wins. The percentage is taken of the pool's
+    /// total tranche capital, which is stable across disbursements (unlike
+    /// spendable liquidity, which a borrower's own draw would shrink).
+    fn borrower_exposure_ceiling(env: &Env) -> Option<i128> {
+        let absolute: i128 = env
+            .storage()
+            .instance()
+            .get(&FeatureKey::MaxBorrowerExposure)
+            .unwrap_or(0);
+        let bps: u32 = env
+            .storage()
+            .instance()
+            .get(&FeatureKey::MaxBorrowerExposureBps)
+            .unwrap_or(0);
+
+        let mut ceiling: Option<i128> = None;
+        if absolute > 0 {
+            ceiling = Some(absolute);
+        }
+        if bps > 0 {
+            let pool_capital = Self::read_tranche_info(env, &Tranche::Senior).total_deposited
+                + Self::read_tranche_info(env, &Tranche::Junior).total_deposited;
+            let relative = pool_capital.saturating_mul(bps as i128) / BPS_SCALE as i128;
+            ceiling = Some(ceiling.map_or(relative, |c| c.min(relative)));
+        }
+        ceiling
+    }
+
+    /// Rejects `additional` principal if it would push the borrower's
+    /// aggregate exposure past the configured ceiling.
+    fn check_borrower_exposure(
+        env: &Env,
+        borrower: &Address,
+        additional: i128,
+    ) -> Result<(), PoolError> {
+        if let Some(ceiling) = Self::borrower_exposure_ceiling(env) {
+            let projected = Self::read_borrower_exposure(env, borrower).saturating_add(additional);
+            if projected > ceiling {
+                return Err(PoolError::BorrowerLoanCapExceeded);
+            }
+        }
+        Ok(())
+    }
+
+    /// Free `principal` of the borrower's exposure when an approved loan
+    /// leaves the book (repaid, defaulted or assumed by someone else).
+    fn release_borrower_exposure(env: &Env, borrower: &Address, principal: i128) {
+        let current = Self::read_borrower_exposure(env, borrower);
+        Self::set_borrower_exposure(env, borrower, current.saturating_sub(principal));
+    }
+
     fn is_rebate_claimed(env: &Env, loan_id: &BytesN<32>) -> bool {
         env.storage()
             .persistent()
@@ -966,6 +1037,22 @@ impl LendingPoolContract {
         }
     }
 
+    /// Rejects the call when the global pause or the pause flag for `group`
+    /// is set. The global pause always wins, whatever the granular flags say.
+    fn check_function_not_paused(env: &Env, group: PauseGroup) -> Result<(), PoolError> {
+        Self::check_not_paused(env)?;
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&FeatureKey::FunctionPaused(group))
+            .unwrap_or(false);
+        if paused {
+            Err(PoolError::ContractPaused)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Settle a quoted payoff at exactly the locked amount.
     ///
     /// The caller has already verified a live quote and `amount ==
@@ -989,6 +1076,7 @@ impl LendingPoolContract {
         loan.outstanding_debt = 0;
         loan.status = LoanStatus::Repaid;
         Self::release_borrower_loan_slot(env, &loan.borrower);
+        Self::release_borrower_exposure(env, &loan.borrower, loan.principal);
         let undisbursed = loan.principal - loan.disbursed;
         if undisbursed > 0 {
             let active_commitments = Self::read_active_commitments(env);
@@ -1399,7 +1487,7 @@ impl LendingPoolContract {
         tranche: Tranche,
         first_loss_cap_bps: Option<u32>,
     ) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::Deposits)?;
         Self::check_whitelist(&env, &investor)?;
         investor.require_auth();
         Self::non_reentrant(&env, || {
@@ -1556,7 +1644,7 @@ impl LendingPoolContract {
         loan_id: BytesN<32>,
         principal: i128,
     ) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::LoanRequests)?;
         Self::check_whitelist(&env, &borrower)?;
         borrower.require_auth();
         Self::do_request_loan(&env, borrower, loan_id, principal, None)
@@ -1569,7 +1657,7 @@ impl LendingPoolContract {
         principal: i128,
         escrow_origin: Address,
     ) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::LoanRequests)?;
         Self::check_whitelist(&env, &borrower)?;
         borrower.require_auth();
         Self::do_request_loan(&env, borrower, loan_id, principal, Some(escrow_origin))
@@ -1605,6 +1693,12 @@ impl LendingPoolContract {
         if active_loan_cap != 0 && borrower_active_loans >= active_loan_cap {
             return Err(PoolError::BorrowerLoanCapExceeded);
         }
+
+        // Reject a request that could never be approved within the borrower's
+        // aggregate exposure cap. Requested loans are not yet counted against
+        // the cap (that starts at approval), so this checks the new principal
+        // on top of what the borrower already has outstanding.
+        Self::check_borrower_exposure(env, &borrower, principal)?;
 
         // Price the application fee up front so a misconfigured fee fails the
         // request before any state is written or any token moves.
@@ -1697,6 +1791,10 @@ impl LendingPoolContract {
             return Err(PoolError::InvalidLoanState);
         }
 
+        // Re-check the aggregate exposure cap at approval: other loans may
+        // have been approved since this one was requested.
+        Self::check_borrower_exposure(&env, &loan.borrower, loan.principal)?;
+
         // Verify pool has enough liquidity accounting for active commitments.
         let liquidity = Self::read_total_liquidity(&env);
         let active_commitments = Self::read_active_commitments(&env);
@@ -1732,6 +1830,14 @@ impl LendingPoolContract {
         env.storage()
             .instance()
             .set(&DataKey::ActiveLoanCommitments, &new_commitments);
+
+        // From approval the loan counts against the borrower's exposure cap.
+        let exposure = Self::read_borrower_exposure(&env, &loan.borrower);
+        Self::set_borrower_exposure(
+            &env,
+            &loan.borrower,
+            exposure.saturating_add(loan.principal),
+        );
 
         // The application was approved, so its escrowed application fee is
         // earned rather than owed: settle it to the treasury. No refund is
@@ -2690,7 +2796,7 @@ impl LendingPoolContract {
         loan_id: BytesN<32>,
         amount: i128,
     ) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::Repayments)?;
         borrower.require_auth();
 
         if amount <= 0 {
@@ -2992,8 +3098,10 @@ impl LendingPoolContract {
                 .persistent()
                 .remove(&DataKey::PayoffQuote(loan_id.clone()));
 
-            // Full repayment frees the borrower's active-loan slot.
+            // Full repayment frees the borrower's active-loan slot and the
+            // loan's share of their exposure cap.
             Self::release_borrower_loan_slot(&env, &loan.borrower);
+            Self::release_borrower_exposure(&env, &loan.borrower, loan.principal);
 
             // Release any undisbursed locked commitments
             let undisbursed = loan.principal - loan.disbursed;
@@ -3050,7 +3158,7 @@ impl LendingPoolContract {
         loan_id: BytesN<32>,
         amount: i128,
     ) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::Repayments)?;
         borrower.require_auth();
         if amount <= 0 {
             return Err(PoolError::InvalidAmount);
@@ -3357,6 +3465,100 @@ impl LendingPoolContract {
         let config = Self::read_config(&env)?;
         config.admin.require_auth();
 
+        Self::execute_default(&env, &config, &loan_id, None)
+    }
+
+    /// Permissionless variant of `mark_default`: any address may default a
+    /// loan that satisfies the same on-chain overdue criteria, and is paid a
+    /// keeper reward out of the seized collateral.
+    ///
+    /// The overdue check is shared with the admin path and runs before any
+    /// state changes, so a healthy loan reverts with `LoanNotOverdue` and the
+    /// caller is paid nothing. The reward is bounded by the seizure proceeds
+    /// (and the configured cap), so it can never touch investor principal.
+    pub fn trigger_default(
+        env: Env,
+        caller: Address,
+        loan_id: BytesN<32>,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        caller.require_auth();
+        let config = Self::read_config(&env)?;
+
+        Self::execute_default(&env, &config, &loan_id, Some(caller))
+    }
+
+    /// Configure the keeper reward paid by `trigger_default`. Admin-only.
+    ///
+    /// `reward_bps` is a share of the seized collateral (at most 10 000) and
+    /// `reward_cap` is the absolute ceiling per default, in token stroops.
+    /// Setting either to zero disables the reward.
+    pub fn set_keeper_reward(env: Env, reward_bps: u32, reward_cap: i128) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        if reward_bps > BPS_SCALE || reward_cap < 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        env.storage()
+            .instance()
+            .set(&FeatureKey::KeeperRewardBps, &reward_bps);
+        env.storage()
+            .instance()
+            .set(&FeatureKey::KeeperRewardCap, &reward_cap);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "keeper_reward_set"),),
+            (reward_bps, reward_cap),
+        );
+        Ok(())
+    }
+
+    /// The configured keeper reward as `(reward_bps, reward_cap)`.
+    pub fn get_keeper_reward(env: Env) -> (u32, i128) {
+        (
+            env.storage()
+                .instance()
+                .get(&FeatureKey::KeeperRewardBps)
+                .unwrap_or(0),
+            env.storage()
+                .instance()
+                .get(&FeatureKey::KeeperRewardCap)
+                .unwrap_or(0),
+        )
+    }
+
+    /// Keeper reward for a seizure of `seized_amount`: the configured share,
+    /// clamped to the cap and to the proceeds themselves. Zero when nothing
+    /// was seized.
+    fn compute_keeper_reward(env: &Env, seized_amount: i128) -> i128 {
+        if seized_amount <= 0 {
+            return 0;
+        }
+        let (bps, cap) = Self::get_keeper_reward(env.clone());
+        if bps == 0 || cap <= 0 {
+            return 0;
+        }
+        (seized_amount.saturating_mul(bps as i128) / BPS_SCALE as i128)
+            .min(cap)
+            .min(seized_amount)
+    }
+
+    /// Shared default routine. `keeper` is the caller of `trigger_default`, or
+    /// `None` for the admin path, which pays no reward.
+    fn execute_default(
+        env: &Env,
+        config: &PoolConfig,
+        loan_id: &BytesN<32>,
+        keeper: Option<Address>,
+    ) -> Result<(), PoolError> {
+        let env = env.clone();
+        let loan_id = loan_id.clone();
+
         let mut loan = Self::read_loan(&env, &loan_id)?;
 
         if loan.status != LoanStatus::Approved {
@@ -3395,6 +3597,26 @@ impl LendingPoolContract {
                 env.current_contract_address().into_val(&env)
             ],
         );
+
+        // Pay the keeper out of the seizure proceeds, never investor principal.
+        let keeper_reward = match &keeper {
+            Some(_) => Self::compute_keeper_reward(&env, seized_amount),
+            None => 0,
+        };
+        if let Some(keeper) = &keeper {
+            if keeper_reward > 0 {
+                Self::token_client(&env, &config.token).transfer(
+                    &env.current_contract_address(),
+                    keeper,
+                    &keeper_reward,
+                );
+                env.events().publish(
+                    (Symbol::new(&env, "keeper_rewarded"), loan_id.clone()),
+                    (keeper.clone(), keeper_reward),
+                );
+            }
+        }
+        let seized_amount = seized_amount - keeper_reward;
 
         let net_loss = gross_loss.saturating_sub(seized_amount);
 
@@ -3467,8 +3689,10 @@ impl LendingPoolContract {
         loan.outstanding_debt = net_loss;
         Self::set_loan(&env, &loan_id, &loan);
 
-        // A defaulted loan is no longer active; free the borrower's slot.
+        // A defaulted loan is no longer active; free the borrower's slot and
+        // write its principal off their exposure.
         Self::release_borrower_loan_slot(&env, &loan.borrower);
+        Self::release_borrower_exposure(&env, &loan.borrower, loan.principal);
 
         env.storage()
             .instance()
@@ -3635,7 +3859,7 @@ impl LendingPoolContract {
     /// The fee is deducted from the withdrawal amount and transferred to the
     /// protocol treasury address. The net amount is transferred to the investor.
     pub fn withdraw(env: Env, investor: Address, amount: i128) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::Withdrawals)?;
         Self::check_whitelist(&env, &investor)?;
         investor.require_auth();
         Self::non_reentrant(&env, || {
@@ -3970,6 +4194,14 @@ impl LendingPoolContract {
         ) {
             Self::set_borrower_active_loans(&env, &snapshot.loan.borrower, active + 1);
         }
+        if snapshot.loan.status == LoanStatus::Approved {
+            let exposure = Self::read_borrower_exposure(&env, &snapshot.loan.borrower);
+            Self::set_borrower_exposure(
+                &env,
+                &snapshot.loan.borrower,
+                exposure.saturating_add(snapshot.loan.principal),
+            );
+        }
         let count = Self::read_loan_count(&env);
         env.storage()
             .instance()
@@ -4151,6 +4383,39 @@ impl LendingPoolContract {
         Ok(())
     }
 
+    /// Pause or unpause a single function group. Admin-only.
+    ///
+    /// The flags are independent of one another and of the global pause:
+    /// pausing withdrawals leaves deposits and repayments running, while the
+    /// global `pause` still halts everything regardless of these flags. All
+    /// flags default to unpaused. Emits `fn_pause_set` with the group, the new
+    /// state and the admin who made the change.
+    pub fn set_function_paused(env: Env, group: PauseGroup, paused: bool) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&FeatureKey::FunctionPaused(group), &paused);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "fn_pause_set"), group),
+            (paused, config.admin),
+        );
+        Ok(())
+    }
+
+    /// Whether `group` is individually paused. Does not reflect the global pause.
+    pub fn is_function_paused(env: Env, group: PauseGroup) -> bool {
+        env.storage()
+            .instance()
+            .get(&FeatureKey::FunctionPaused(group))
+            .unwrap_or(false)
+    }
+
     // ── Admin Transfer ─────────────────────────────────────────────────
 
     /// Propose a new admin address. The current admin initiates the transfer.
@@ -4296,6 +4561,11 @@ impl LendingPoolContract {
                 return Err(LoanAssumptionError::ApplicantNotVerified);
             }
         }
+
+        // Exposure follows the loan to the new borrower.
+        Self::release_borrower_exposure(&env, &loan.borrower, loan.principal);
+        let assumed = Self::read_borrower_exposure(&env, &new_borrower);
+        Self::set_borrower_exposure(&env, &new_borrower, assumed.saturating_add(loan.principal));
 
         // Transfer loan obligations to new borrower
         loan.borrower = new_borrower;
@@ -4946,6 +5216,65 @@ impl LendingPoolContract {
             .publish((Symbol::new(&env, "set_max_loans"),), (previous, max_loans));
 
         Ok(())
+    }
+
+    /// Configure the per-borrower aggregate exposure cap. Admin-only.
+    ///
+    /// `max_amount` is an absolute ceiling, in token stroops, on the summed
+    /// principal of a borrower's approved loans; `max_bps` is a ceiling as a
+    /// share (basis points, at most 10 000) of the pool's total tranche
+    /// capital. When both are set the lower ceiling applies; `0` disables
+    /// the respective cap.
+    ///
+    /// The cap is enforced at `request_loan` and `approve_loan`. Loans that
+    /// already exist are untouched, so lowering the cap only blocks new
+    /// origination until the borrower's exposure falls back under it.
+    pub fn set_borrower_exposure_cap(
+        env: Env,
+        max_amount: i128,
+        max_bps: u32,
+    ) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        if max_amount < 0 || max_bps > BPS_SCALE {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        env.storage()
+            .instance()
+            .set(&FeatureKey::MaxBorrowerExposure, &max_amount);
+        env.storage()
+            .instance()
+            .set(&FeatureKey::MaxBorrowerExposureBps, &max_bps);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "set_exposure_cap"),),
+            (max_amount, max_bps),
+        );
+        Ok(())
+    }
+
+    /// The configured exposure cap as `(max_amount, max_bps)`; `0` means off.
+    pub fn get_borrower_exposure_cap(env: Env) -> (i128, u32) {
+        (
+            env.storage()
+                .instance()
+                .get(&FeatureKey::MaxBorrowerExposure)
+                .unwrap_or(0),
+            env.storage()
+                .instance()
+                .get(&FeatureKey::MaxBorrowerExposureBps)
+                .unwrap_or(0),
+        )
+    }
+
+    /// Aggregate principal of `borrower`'s approved, not-yet-closed loans.
+    pub fn get_borrower_exposure(env: Env, borrower: Address) -> i128 {
+        Self::read_borrower_exposure(&env, &borrower)
     }
 
     /// Set the refinancing cooldown period in ledgers.
@@ -7501,6 +7830,237 @@ mod test {
         assert_eq!(result.unwrap_err(), Ok(PoolError::ContractPaused));
     }
 
+    // ── Granular function-level pause flags ──────────────────────────────
+
+    /// Pool with an approved, fully disbursed 10,000 loan and 50,000 of
+    /// capital. Returns (client, extra_investor, borrower, loan_id, token).
+    fn setup_granular_pause_pool(
+        env: &Env,
+    ) -> (
+        LendingPoolContractClient<'_>,
+        Address,
+        Address,
+        BytesN<32>,
+        Address,
+    ) {
+        extend_test_ttls(env);
+        let (_admin, investor, _treasury, token_address, client) =
+            setup_pool_with_rates(env, 0u32, 0u32);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+
+        let borrower = Address::generate(env);
+        let loan_id = mock_loan_id(env);
+        client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &10_000_0000000i128);
+
+        let sac = StellarAssetClient::new(env, &token_address);
+        sac.mint(&borrower, &1_000_0000000i128);
+        (client, investor, borrower, loan_id, token_address)
+    }
+
+    /// Attempt one call in each guarded group and report whether it went
+    /// through, in the order [deposit, withdraw, request_loan, repay]. A
+    /// rejected call changes nothing, so the probes can be repeated.
+    fn probe_groups(
+        env: &Env,
+        client: &LendingPoolContractClient<'_>,
+        investor: &Address,
+        borrower: &Address,
+        loan_id: &BytesN<32>,
+        token: &Address,
+        nonce: u8,
+    ) -> [bool; 4] {
+        let depositor = Address::generate(env);
+        StellarAssetClient::new(env, token).mint(&depositor, &10_0000000i128);
+        let new_loan = BytesN::from_array(env, &[nonce; 32]);
+
+        [
+            client
+                .try_deposit(&depositor, &10_0000000i128, &Tranche::Senior)
+                .is_ok(),
+            client.try_withdraw(investor, &10_0000000i128).is_ok(),
+            client
+                .try_request_loan(&Address::generate(env), &new_loan, &1_0000000i128)
+                .is_ok(),
+            client.try_repay(borrower, loan_id, &1_0000000i128).is_ok(),
+        ]
+    }
+
+    #[test]
+    fn test_granular_pause_flags_default_to_unpaused() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, investor, borrower, loan_id, token) = setup_granular_pause_pool(&env);
+
+        for group in [
+            PauseGroup::Deposits,
+            PauseGroup::Withdrawals,
+            PauseGroup::LoanRequests,
+            PauseGroup::Repayments,
+        ] {
+            assert!(!client.is_function_paused(&group));
+        }
+        assert_eq!(
+            probe_groups(&env, &client, &investor, &borrower, &loan_id, &token, 0x01),
+            [true; 4]
+        );
+    }
+
+    #[test]
+    fn test_each_granular_pause_flag_blocks_only_its_own_group() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, investor, borrower, loan_id, token) = setup_granular_pause_pool(&env);
+
+        let groups = [
+            PauseGroup::Deposits,
+            PauseGroup::Withdrawals,
+            PauseGroup::LoanRequests,
+            PauseGroup::Repayments,
+        ];
+        for (i, group) in groups.iter().enumerate() {
+            client.set_function_paused(group, &true);
+            assert!(client.is_function_paused(group));
+
+            let mut expected = [true; 4];
+            expected[i] = false;
+            assert_eq!(
+                probe_groups(
+                    &env,
+                    &client,
+                    &investor,
+                    &borrower,
+                    &loan_id,
+                    &token,
+                    0x10 + i as u8
+                ),
+                expected,
+                "only {:?} should be blocked",
+                group
+            );
+
+            client.set_function_paused(group, &false);
+            assert!(!client.is_function_paused(group));
+        }
+    }
+
+    #[test]
+    fn test_pausing_withdrawals_alone_leaves_deposits_and_repayments_working() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, investor, borrower, loan_id, _token) = setup_granular_pause_pool(&env);
+
+        client.set_function_paused(&PauseGroup::Withdrawals, &true);
+
+        assert_eq!(
+            client.try_withdraw(&investor, &10_0000000i128).unwrap_err(),
+            Ok(PoolError::ContractPaused)
+        );
+        client.deposit(&investor, &10_0000000i128, &Tranche::Senior);
+        client.repay(&borrower, &loan_id, &1_0000000i128);
+    }
+
+    #[test]
+    fn test_repayments_stay_open_while_every_other_group_is_paused() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, investor, borrower, loan_id, token) = setup_granular_pause_pool(&env);
+
+        client.set_function_paused(&PauseGroup::Deposits, &true);
+        client.set_function_paused(&PauseGroup::Withdrawals, &true);
+        client.set_function_paused(&PauseGroup::LoanRequests, &true);
+
+        assert_eq!(
+            probe_groups(&env, &client, &investor, &borrower, &loan_id, &token, 0x20),
+            [false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn test_global_pause_halts_everything_regardless_of_granular_flags() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, investor, borrower, loan_id, token) = setup_granular_pause_pool(&env);
+
+        // Global pause with every granular flag clear.
+        client.pause();
+        assert_eq!(
+            probe_groups(&env, &client, &investor, &borrower, &loan_id, &token, 0x30),
+            [false; 4]
+        );
+
+        // Setting and clearing granular flags under the global pause changes nothing.
+        client.set_function_paused(&PauseGroup::Repayments, &true);
+        client.set_function_paused(&PauseGroup::Repayments, &false);
+        assert_eq!(
+            probe_groups(&env, &client, &investor, &borrower, &loan_id, &token, 0x31),
+            [false; 4]
+        );
+
+        // Lifting the global pause restores everything that is not individually paused.
+        client.set_function_paused(&PauseGroup::Deposits, &true);
+        client.unpause();
+        assert_eq!(
+            probe_groups(&env, &client, &investor, &borrower, &loan_id, &token, 0x32),
+            [false, true, true, true]
+        );
+    }
+
+    #[test]
+    fn test_set_function_paused_is_admin_only() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, ..) = setup_granular_pause_pool(&env);
+
+        env.set_auths(&[]);
+        let result = client.try_set_function_paused(&PauseGroup::Deposits, &true);
+        assert!(result.is_err());
+        assert!(!client.is_function_paused(&PauseGroup::Deposits));
+    }
+
+    #[test]
+    fn test_set_function_paused_emits_event_naming_the_group() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, ..) = setup_granular_pause_pool(&env);
+
+        client.set_function_paused(&PauseGroup::Withdrawals, &true);
+
+        let emitted = env.events().all().iter().any(|(_, topics, data)| {
+            let name_matches = topics
+                .get(0)
+                .map(|t| {
+                    <Symbol as soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>::try_from_val(
+                        &env, &t,
+                    )
+                    .ok()
+                        == Some(Symbol::new(&env, "fn_pause_set"))
+                })
+                .unwrap_or(false);
+            let group_matches = topics
+                .get(1)
+                .map(|t| {
+                    <PauseGroup as soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>::try_from_val(
+                        &env, &t,
+                    )
+                    .ok()
+                        == Some(PauseGroup::Withdrawals)
+                })
+                .unwrap_or(false);
+            let admin = client.get_pool_config().admin;
+            let data_matches = <(bool, Address) as soroban_sdk::TryFromVal<
+                Env,
+                soroban_sdk::Val,
+            >>::try_from_val(&env, &data)
+            .ok()
+                == Some((true, admin));
+            name_matches && group_matches && data_matches
+        });
+        assert!(emitted);
+    }
+
     #[test]
     fn test_deposit_resumes_after_unpause() {
         let env = Env::default();
@@ -7680,6 +8240,203 @@ mod test {
         // Loan is approved and current — not overdue.
         let result = client.try_mark_default(&loan_id);
         assert_eq!(result.unwrap_err(), Ok(PoolError::LoanNotOverdue));
+    }
+
+    // ── Permissionless keeper default (trigger_default) ───────────────────
+
+    /// Like `setup_overdue_loan`, but lets the caller pick whether the escrow
+    /// actually seizes collateral (5,000 via `MockEscrow`) or recovers nothing.
+    /// Returns (token_address, loan_id, client); `overdue` controls whether the
+    /// ledger is advanced past the default threshold.
+    fn setup_keeper_loan(
+        env: &Env,
+        seizes: bool,
+        overdue: bool,
+    ) -> (Address, BytesN<32>, LendingPoolContractClient<'_>) {
+        extend_test_ttls(env);
+        let admin = Address::generate(env);
+        let investor = Address::generate(env);
+        let junior_investor = Address::generate(env);
+
+        let token_id = env.register_stellar_asset_contract_v2(Address::generate(env));
+        let token_address = token_id.address();
+        let sac = StellarAssetClient::new(env, &token_address);
+        sac.mint(&investor, &70_000_0000000i128);
+        sac.mint(&junior_investor, &30_000_0000000i128);
+
+        let escrow = if seizes {
+            let escrow_id = env.register(MockEscrow, ());
+            env.invoke_contract::<()>(
+                &escrow_id,
+                &symbol_short!("set_token"),
+                soroban_sdk::vec![env, token_address.into_val(env)],
+            );
+            escrow_id
+        } else {
+            env.register(ZeroSeizureEscrow, ())
+        };
+
+        let contract_id = env.register(LendingPoolContract, ());
+        let client = LendingPoolContractClient::new(env, &contract_id);
+        client.initialize(
+            &admin,
+            &token_address,
+            &escrow,
+            &0u32,
+            &0u32,
+            &Address::generate(env),
+            &0u32,
+            &0u32,
+        );
+
+        client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
+        client.deposit(&junior_investor, &30_000_0000000i128, &Tranche::Junior);
+
+        let borrower = Address::generate(env);
+        let loan_id = mock_loan_id(env);
+        client.request_loan(&borrower, &loan_id, &20_000_0000000i128);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &20_000_0000000i128);
+
+        if overdue {
+            make_loan_overdue(env, &client, &loan_id);
+        }
+
+        (token_address, loan_id, client)
+    }
+
+    #[test]
+    fn test_trigger_default_by_third_party_pays_keeper_reward() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (token, loan_id, client) = setup_keeper_loan(&env, true, true);
+        // 2% of the 5,000 seized = 100, well under the cap.
+        client.set_keeper_reward(&200u32, &1_000_0000000i128);
+
+        let keeper = Address::generate(&env);
+        client.trigger_default(&keeper, &loan_id);
+
+        let loan = client.get_loan_info(&loan_id);
+        assert_eq!(loan.status, LoanStatus::Defaulted);
+        assert_eq!(
+            soroban_sdk::token::TokenClient::new(&env, &token).balance(&keeper),
+            100_0000000i128
+        );
+        // The reward comes out of the seizure proceeds: 5,000 - 100 recovered.
+        assert_eq!(loan.repaid, 4_900_0000000i128);
+        assert_eq!(loan.outstanding_debt, 15_100_0000000i128);
+    }
+
+    #[test]
+    fn test_trigger_default_not_overdue_reverts_and_pays_nothing() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (token, loan_id, client) = setup_keeper_loan(&env, true, false);
+        client.set_keeper_reward(&200u32, &1_000_0000000i128);
+
+        let keeper = Address::generate(&env);
+        let result = client.try_trigger_default(&keeper, &loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::LoanNotOverdue));
+
+        assert_eq!(
+            soroban_sdk::token::TokenClient::new(&env, &token).balance(&keeper),
+            0
+        );
+        assert_eq!(client.get_loan_info(&loan_id).status, LoanStatus::Approved);
+    }
+
+    #[test]
+    fn test_trigger_default_reward_is_capped() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (token, loan_id, client) = setup_keeper_loan(&env, true, true);
+        // 10% of 5,000 would be 500, but the cap is 50.
+        client.set_keeper_reward(&1_000u32, &50_0000000i128);
+
+        let keeper = Address::generate(&env);
+        client.trigger_default(&keeper, &loan_id);
+
+        assert_eq!(
+            soroban_sdk::token::TokenClient::new(&env, &token).balance(&keeper),
+            50_0000000i128
+        );
+    }
+
+    #[test]
+    fn test_trigger_default_pays_no_reward_when_proceeds_are_zero() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (token, loan_id, client) = setup_keeper_loan(&env, false, true);
+        client.set_keeper_reward(&1_000u32, &50_0000000i128);
+
+        let keeper = Address::generate(&env);
+        client.trigger_default(&keeper, &loan_id);
+
+        let loan = client.get_loan_info(&loan_id);
+        assert_eq!(loan.status, LoanStatus::Defaulted);
+        assert_eq!(
+            soroban_sdk::token::TokenClient::new(&env, &token).balance(&keeper),
+            0
+        );
+        // No reward was carved out of investor principal: the full loss is booked.
+        assert_eq!(loan.outstanding_debt, 20_000_0000000i128);
+    }
+
+    #[test]
+    fn test_trigger_default_without_configured_reward_pays_nothing() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (token, loan_id, client) = setup_keeper_loan(&env, true, true);
+
+        let keeper = Address::generate(&env);
+        client.trigger_default(&keeper, &loan_id);
+
+        assert_eq!(
+            soroban_sdk::token::TokenClient::new(&env, &token).balance(&keeper),
+            0
+        );
+        assert_eq!(client.get_loan_info(&loan_id).repaid, 5_000_0000000i128);
+    }
+
+    #[test]
+    fn test_set_keeper_reward_rejects_invalid_config() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (_token, _loan_id, client) = setup_keeper_loan(&env, false, false);
+
+        assert_eq!(
+            client
+                .try_set_keeper_reward(&10_001u32, &1i128)
+                .unwrap_err(),
+            Ok(PoolError::InvalidAmount)
+        );
+        assert_eq!(
+            client.try_set_keeper_reward(&100u32, &-1i128).unwrap_err(),
+            Ok(PoolError::InvalidAmount)
+        );
+
+        client.set_keeper_reward(&100u32, &7i128);
+        assert_eq!(client.get_keeper_reward(), (100u32, 7i128));
+    }
+
+    #[test]
+    fn test_trigger_default_reverts_when_paused() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (_token, loan_id, client) = setup_keeper_loan(&env, true, true);
+        client.pause();
+
+        let keeper = Address::generate(&env);
+        let result = client.try_trigger_default(&keeper, &loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::ContractPaused));
     }
 
     #[test]
@@ -7989,6 +8746,241 @@ mod test {
         // Repaying the loan freed the slot for another origination.
         client.request_loan(&borrower, &loan_c, &principal);
         assert_eq!(client.get_borrower_active_loans(&borrower), 1);
+    }
+
+    // ── Per-borrower aggregate exposure cap ───────────────────────────────
+
+    /// Pool with 100,000 of senior capital at 0% interest, so repaying the
+    /// principal closes a loan exactly. Returns (token_address, client).
+    fn setup_exposure_pool(env: &Env) -> (Address, LendingPoolContractClient<'_>) {
+        extend_test_ttls(env);
+        let (_admin, investor, _treasury, token_address, client) =
+            setup_pool_with_rates(env, 0u32, 0u32);
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        (token_address, client)
+    }
+
+    fn exposure_loan_id(env: &Env, tag: u8) -> BytesN<32> {
+        BytesN::from_array(env, &[tag; 32])
+    }
+
+    #[test]
+    fn test_exposure_cap_allows_request_within_cap() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_token, client) = setup_exposure_pool(&env);
+        let borrower = Address::generate(&env);
+
+        client.set_borrower_exposure_cap(&30_000_0000000i128, &0u32);
+        assert_eq!(
+            client.get_borrower_exposure_cap(),
+            (30_000_0000000i128, 0u32)
+        );
+
+        let loan_a = exposure_loan_id(&env, 0xA1);
+        let loan_b = exposure_loan_id(&env, 0xB2);
+        client.request_loan(&borrower, &loan_a, &20_000_0000000i128);
+        // Requested loans are not counted until approval.
+        assert_eq!(client.get_borrower_exposure(&borrower), 0);
+
+        client.approve_loan(&loan_a);
+        assert_eq!(client.get_borrower_exposure(&borrower), 20_000_0000000i128);
+
+        // 20,000 + 10,000 lands exactly on the cap and is allowed.
+        client.request_loan(&borrower, &loan_b, &10_000_0000000i128);
+        client.approve_loan(&loan_b);
+        assert_eq!(client.get_borrower_exposure(&borrower), 30_000_0000000i128);
+    }
+
+    #[test]
+    fn test_exposure_cap_rejects_request_that_would_exceed_it() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_token, client) = setup_exposure_pool(&env);
+        let borrower = Address::generate(&env);
+
+        client.set_borrower_exposure_cap(&30_000_0000000i128, &0u32);
+
+        // A single request above the cap is rejected outright.
+        let too_big = exposure_loan_id(&env, 0xC3);
+        assert_eq!(
+            client
+                .try_request_loan(&borrower, &too_big, &30_000_0000001i128)
+                .unwrap_err(),
+            Ok(PoolError::BorrowerLoanCapExceeded)
+        );
+
+        // So is a request that only exceeds it together with an approved loan.
+        let loan_a = exposure_loan_id(&env, 0xA1);
+        let loan_b = exposure_loan_id(&env, 0xB2);
+        client.request_loan(&borrower, &loan_a, &20_000_0000000i128);
+        client.approve_loan(&loan_a);
+        assert_eq!(
+            client
+                .try_request_loan(&borrower, &loan_b, &10_000_0000001i128)
+                .unwrap_err(),
+            Ok(PoolError::BorrowerLoanCapExceeded)
+        );
+        assert_eq!(client.get_borrower_exposure(&borrower), 20_000_0000000i128);
+    }
+
+    #[test]
+    fn test_exposure_cap_is_rechecked_at_approval() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_token, client) = setup_exposure_pool(&env);
+        let borrower = Address::generate(&env);
+
+        client.set_borrower_exposure_cap(&30_000_0000000i128, &0u32);
+
+        // Both requests fit the cap individually, since neither is counted yet.
+        let loan_a = exposure_loan_id(&env, 0xA1);
+        let loan_b = exposure_loan_id(&env, 0xB2);
+        client.request_loan(&borrower, &loan_a, &20_000_0000000i128);
+        client.request_loan(&borrower, &loan_b, &20_000_0000000i128);
+
+        client.approve_loan(&loan_a);
+        // Approving the second would take the borrower to 40,000 > 30,000.
+        assert_eq!(
+            client.try_approve_loan(&loan_b).unwrap_err(),
+            Ok(PoolError::BorrowerLoanCapExceeded)
+        );
+        assert_eq!(client.get_loan_info(&loan_b).status, LoanStatus::Requested);
+    }
+
+    #[test]
+    fn test_exposure_cap_is_freed_by_full_repayment() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (token_address, client) = setup_exposure_pool(&env);
+        let sac = StellarAssetClient::new(&env, &token_address);
+        let borrower = Address::generate(&env);
+        let principal = 30_000_0000000i128;
+
+        client.set_borrower_exposure_cap(&principal, &0u32);
+
+        let loan_a = exposure_loan_id(&env, 0xA1);
+        let loan_b = exposure_loan_id(&env, 0xB2);
+        client.request_loan(&borrower, &loan_a, &principal);
+        client.approve_loan(&loan_a);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_a, &borrower, &principal);
+
+        // At the cap: no room for another loan.
+        assert_eq!(
+            client
+                .try_request_loan(&borrower, &loan_b, &1_0000000i128)
+                .unwrap_err(),
+            Ok(PoolError::BorrowerLoanCapExceeded)
+        );
+
+        sac.mint(&borrower, &principal);
+        client.repay(&borrower, &loan_a, &principal);
+        assert_eq!(client.get_loan_info(&loan_a).status, LoanStatus::Repaid);
+        assert_eq!(client.get_borrower_exposure(&borrower), 0);
+
+        // The freed capacity is immediately usable.
+        client.request_loan(&borrower, &loan_b, &principal);
+        client.approve_loan(&loan_b);
+        assert_eq!(client.get_borrower_exposure(&borrower), principal);
+    }
+
+    #[test]
+    fn test_exposure_cap_is_freed_by_default_write_off() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_token, loan_id, client) = setup_keeper_loan(&env, false, true);
+        let borrower = client.get_loan_info(&loan_id).borrower;
+        assert_eq!(client.get_borrower_exposure(&borrower), 20_000_0000000i128);
+
+        client.mark_default(&loan_id);
+        assert_eq!(client.get_borrower_exposure(&borrower), 0);
+    }
+
+    #[test]
+    fn test_exposure_cap_is_tracked_per_borrower_across_a_shared_pool() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_token, client) = setup_exposure_pool(&env);
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        client.set_borrower_exposure_cap(&40_000_0000000i128, &0u32);
+
+        let alice_loan = exposure_loan_id(&env, 0xA1);
+        let bob_loan = exposure_loan_id(&env, 0xB2);
+        let alice_extra = exposure_loan_id(&env, 0xA2);
+
+        client.request_loan(&alice, &alice_loan, &40_000_0000000i128);
+        client.approve_loan(&alice_loan);
+
+        // Alice is at her cap, but Bob's headroom is independent of hers.
+        client.request_loan(&bob, &bob_loan, &40_000_0000000i128);
+        client.approve_loan(&bob_loan);
+        assert_eq!(client.get_borrower_exposure(&alice), 40_000_0000000i128);
+        assert_eq!(client.get_borrower_exposure(&bob), 40_000_0000000i128);
+
+        assert_eq!(
+            client
+                .try_request_loan(&alice, &alice_extra, &1_0000000i128)
+                .unwrap_err(),
+            Ok(PoolError::BorrowerLoanCapExceeded)
+        );
+    }
+
+    #[test]
+    fn test_exposure_cap_percentage_of_pool_and_lower_bound_wins() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_token, client) = setup_exposure_pool(&env);
+        let borrower = Address::generate(&env);
+
+        // 25% of 100,000 of pool capital = 25,000.
+        client.set_borrower_exposure_cap(&0i128, &2_500u32);
+        let loan_a = exposure_loan_id(&env, 0xA1);
+        assert_eq!(
+            client
+                .try_request_loan(&borrower, &loan_a, &25_000_0000001i128)
+                .unwrap_err(),
+            Ok(PoolError::BorrowerLoanCapExceeded)
+        );
+        client.request_loan(&borrower, &loan_a, &25_000_0000000i128);
+
+        // With an absolute cap of 10,000 as well, the lower ceiling applies.
+        client.set_borrower_exposure_cap(&10_000_0000000i128, &2_500u32);
+        let loan_b = exposure_loan_id(&env, 0xB2);
+        assert_eq!(
+            client
+                .try_request_loan(&borrower, &loan_b, &10_000_0000001i128)
+                .unwrap_err(),
+            Ok(PoolError::BorrowerLoanCapExceeded)
+        );
+        client.request_loan(&borrower, &loan_b, &10_000_0000000i128);
+
+        // Zero disables both caps.
+        client.set_borrower_exposure_cap(&0i128, &0u32);
+        let loan_c = exposure_loan_id(&env, 0xC3);
+        client.request_loan(&borrower, &loan_c, &90_000_0000000i128);
+    }
+
+    #[test]
+    fn test_exposure_cap_setter_validates_input() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_token, client) = setup_exposure_pool(&env);
+
+        assert_eq!(
+            client
+                .try_set_borrower_exposure_cap(&-1i128, &0u32)
+                .unwrap_err(),
+            Ok(PoolError::InvalidAmount)
+        );
+        assert_eq!(
+            client
+                .try_set_borrower_exposure_cap(&0i128, &10_001u32)
+                .unwrap_err(),
+            Ok(PoolError::InvalidAmount)
+        );
     }
 
     #[test]
