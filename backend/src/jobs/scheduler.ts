@@ -19,6 +19,7 @@ import { runDeadlockDetectionJob } from "./deadlockDetection.js";
 import { runTableBloatMonitorJob } from "./tableBloatMonitor.js";
 import { runUnusedIndexAuditJob } from "./unusedIndexAudit.js";
 import { runQueryKillerJob } from "./queryKiller.js";
+import { runFourEyesApprovalExpiryJob } from "./fourEyesApprovalExpiry.js";
 import { applyDueServicingTransfers } from "../services/loanServicing.js";
 import { prisma } from "../services/db.js";
 import { createPrismaSlowQueryStore } from "../services/slowQueryLog.js";
@@ -40,6 +41,7 @@ let staleFlagAuditTask: ReturnType<typeof cron.schedule> | null = null;
 let servicingTransferTask: ReturnType<typeof cron.schedule> | null = null;
 let tableBloatMonitorTask: ReturnType<typeof cron.schedule> | null = null;
 let queryKillerTask: ReturnType<typeof cron.schedule> | null = null;
+let fourEyesApprovalExpiryTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -60,6 +62,13 @@ export function startScheduler() {
   sessionTokenPurgeTask = cron.schedule(sessionPurgeSchedule, async () => {
     console.log("[Scheduler] Triggering session token purge job...");
     await runSessionTokenPurgeJob();
+  }, { timezone: "UTC" });
+
+  // Every 15 minutes: expire overdue four-eyes approval requests (issue #841)
+  const fourEyesExpirySchedule = process.env.FOUR_EYES_APPROVAL_EXPIRY_CRON_SCHEDULE || "*/15 * * * *";
+  fourEyesApprovalExpiryTask = cron.schedule(fourEyesExpirySchedule, async () => {
+    console.log("[Scheduler] Triggering four-eyes approval expiry sweep...");
+    await runFourEyesApprovalExpiryJob();
   }, { timezone: "UTC" });
 
   // Daily at 05:00 UTC: soft-deleted borrower and loan record purge
@@ -242,6 +251,10 @@ export function stopScheduler() {
   if (queryKillerTask) {
     queryKillerTask.stop();
     queryKillerTask = null;
+  }
+  if (fourEyesApprovalExpiryTask) {
+    fourEyesApprovalExpiryTask.stop();
+    fourEyesApprovalExpiryTask = null;
   }
   stopAnalyticsRefreshScheduler();
   console.log("[Scheduler] Stopped.");

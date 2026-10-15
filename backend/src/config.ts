@@ -55,6 +55,17 @@ export interface Config {
   webhookRotationNotifyEmail: string;
   allowedOrigins: string[];
   adminApiKey: string;
+  /**
+   * Wallet addresses (lowercased) eligible to approve a four-eyes approval
+   * request (issue #841), in addition to the single ADMIN_WALLET_ADDRESS.
+   * A request's own requester is never an eligible approver for it even if
+   * their address is in this list. Two or more distinct admin identities
+   * must be configured across ADMIN_WALLET_ADDRESS + this list for any
+   * four-eyes request to ever be approvable.
+   */
+  fourEyesApproverAddresses: string[];
+  /** How long a pending four-eyes request stays approvable before it expires. */
+  fourEyesApprovalExpiryHours: number;
   redisUrl: string | null;
   redisClusterEnabled: boolean;
   redisClusterNodes: string[];
@@ -296,6 +307,11 @@ export function loadConfig(): Config {
       ? process.env.ALLOWED_ORIGINS.split(",").map((origin) => origin.trim())
       : loadDocumentedAllowedOrigins(process.env.NODE_ENV || "development"),
     adminApiKey: process.env.ADMIN_API_KEY || "default_admin_api_key",
+    fourEyesApproverAddresses: String(process.env.FOUR_EYES_APPROVER_ADDRESSES || "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+    fourEyesApprovalExpiryHours: parseInt(process.env.FOUR_EYES_APPROVAL_EXPIRY_HOURS || "24", 10),
     redisUrl: process.env.REDIS_URL || null,
     redisClusterEnabled: process.env.REDIS_CLUSTER_ENABLED === "true",
     redisClusterNodes: process.env.REDIS_CLUSTER_NODES
