@@ -769,6 +769,41 @@ enum ReviewerStatus {
   ON_LEAVE
 }
 
+// Four-eyes approval queue for high-value/sensitive admin actions (issue
+// #841). A request's `payload` is exactly what the originating admin route
+// needs to actually perform the action once approved — the route defers
+// execution rather than running it immediately. `requestedBy` can never also
+// be the `approvedBy`/`rejectedBy` address (enforced in services/
+// fourEyesApproval.ts, not at the schema level, since Postgres can't express
+// "column A != column B" across nullable columns cleanly here).
+model FourEyesApprovalRequest {
+  id              String    @id @default(uuid())
+  /// One of FOUR_EYES_ACTIONS in services/fourEyesPolicy.ts.
+  actionType      String
+  /// Exact arguments to re-run the original action on approval.
+  payload         Json
+  /// Dollar value at stake, when the action type is amount-gated. Null for
+  /// actions that always require approval regardless of amount.
+  amount          Float?
+  requestedBy     String
+  /// "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED"
+  status          String    @default("PENDING")
+  approvedBy      String?
+  approvedAt      DateTime?
+  rejectedBy      String?
+  rejectedAt      DateTime?
+  rejectionReason String?
+  /// Set once the approved action has actually been executed.
+  executedAt      DateTime?
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status, expiresAt])
+  @@index([requestedBy])
+  @@index([actionType, status])
+}
+
 /// Review staff that new loan applications are distributed across by the
 /// round-robin assignment queue (issue #621).
 model Reviewer {

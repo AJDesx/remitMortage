@@ -7,7 +7,7 @@ import { sendWebhook } from "../services/webhook.js";
 import { runEscrowReconciliation } from "../jobs/escrowReconciliation.js";
 import logger from "../utils/logger.js";
 import { requireAdmin, type AuthenticatedRequest } from "../middleware/auth.js";
-import { bulkReviewApplications, type BulkReviewDecision } from "../services/loanStore.js";
+import { bulkReviewApplications, getApplication, type BulkReviewDecision } from "../services/loanStore.js";
 import { mergeApplicants, MergeValidationError } from "../services/applicantMerge.js";
 import { promoteWaitlistBatch } from "../services/inviteCode.js";
 import { runSuspiciousActivityScan } from "../services/suspiciousActivity.js";
@@ -26,6 +26,16 @@ import {
 } from "../services/webhookLatency.js";
 import { listSuppressedApplicants } from "../services/emailSuppression.js";
 import { runUnusedIndexAuditJob } from "../jobs/unusedIndexAudit.js";
+import {
+  createApprovalRequest,
+  getApprovalRequest,
+  listPendingApprovalRequests,
+  approveRequest,
+  rejectRequest,
+  markExecuted,
+  FourEyesError,
+} from "../services/fourEyesApproval.js";
+import { requiresFourEyesApproval } from "../services/fourEyesPolicy.js";
 import { loadConfig } from "../config.js";
 
 export const adminRouter = Router();
@@ -175,15 +185,45 @@ adminRouter.get("/loans/:id/tax-id-matches", requireAdmin, async (req: Authentic
 
 adminRouter.post("/loans/:id/servicing-transfer", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   const body = req.body ?? {};
+  const loanId = String(req.params.id);
+  const requestedBy = req.user?.walletAddress ?? "admin-api-key";
   try {
+    const loan = await getApplication(loanId);
+    if (!loan) {
+      return res.status(404).json({ error: "not_found", message: "Loan application not found" });
+    }
+
+    const amount = Number(loan.amount);
+    if (requiresFourEyesApproval("LOAN_SERVICING_TRANSFER", Number.isFinite(amount) ? amount : null)) {
+      const request = await createApprovalRequest({
+        actionType: "LOAN_SERVICING_TRANSFER",
+        payload: {
+          loanId,
+          toServicer: body.toServicer,
+          toServicerContact: body.toServicerContact,
+          effectiveDate: body.effectiveDate,
+          reason: body.reason,
+          investorAddresses: body.investorAddresses,
+          ipAddress: req.ip,
+        },
+        amount: Number.isFinite(amount) ? amount : null,
+        requestedBy,
+      });
+      return res.status(202).json({
+        fourEyesApprovalRequired: true,
+        approvalRequestId: request.id,
+        message: "This transfer exceeds the four-eyes approval threshold and will execute once a distinct second admin approves it.",
+      });
+    }
+
     const transfer = await initiateServicingTransfer({
-      loanId: String(req.params.id),
+      loanId,
       toServicer: body.toServicer,
       toServicerContact: body.toServicerContact,
       effectiveDate: body.effectiveDate,
       reason: body.reason,
       investorAddresses: body.investorAddresses,
-      initiatedBy: req.user?.walletAddress ?? "admin-api-key",
+      initiatedBy: requestedBy,
       ipAddress: req.ip,
     });
     return res.status(201).json(transfer);
@@ -193,6 +233,98 @@ adminRouter.post("/loans/:id/servicing-transfer", requireAdmin, async (req: Auth
     }
     logger.error("Loan servicing transfer error", { error });
     return res.status(500).json({ error: "servicing_transfer_failed" });
+  }
+});
+
+// ── Four-eyes approval queue (issue #841) ─────────────────────────────────
+
+adminRouter.get("/four-eyes/requests", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json({ requests: await listPendingApprovalRequests() });
+  } catch (error) {
+    logger.error("List four-eyes requests error", { error });
+    return res.status(500).json({ error: "failed_to_list_requests" });
+  }
+});
+
+adminRouter.get("/four-eyes/requests/:id", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const request = await getApprovalRequest(String(req.params.id));
+    if (!request) {
+      return res.status(404).json({ error: "not_found", message: "Approval request not found" });
+    }
+    return res.json({ request });
+  } catch (error) {
+    logger.error("Get four-eyes request error", { error });
+    return res.status(500).json({ error: "failed_to_get_request" });
+  }
+});
+
+/**
+ * Executes a request's stored payload once approved. Each action type that
+ * can be routed through four-eyes is dispatched here; an unrecognized type
+ * (should never happen — it was only created by a route that knows how to
+ * execute it) is logged and left unexecuted rather than guessed at.
+ */
+async function executeApprovedRequest(request: { id: string; actionType: string; payload: unknown; approvedBy: string | null }) {
+  const payload = (request.payload ?? {}) as Record<string, any>;
+
+  if (request.actionType === "LOAN_SERVICING_TRANSFER") {
+    await initiateServicingTransfer({
+      loanId: payload.loanId,
+      toServicer: payload.toServicer,
+      toServicerContact: payload.toServicerContact,
+      effectiveDate: payload.effectiveDate,
+      reason: payload.reason,
+      investorAddresses: payload.investorAddresses,
+      initiatedBy: request.approvedBy ?? "four-eyes-approval",
+      ipAddress: payload.ipAddress,
+    });
+  } else {
+    logger.error("[four-eyes] No executor registered for action type", { actionType: request.actionType, requestId: request.id });
+    return;
+  }
+
+  await markExecuted(request.id);
+}
+
+adminRouter.post("/four-eyes/requests/:id/approve", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const approverAddress = req.user?.walletAddress ?? "admin-api-key";
+  try {
+    const approved = await approveRequest(String(req.params.id), approverAddress);
+    try {
+      await executeApprovedRequest(approved);
+    } catch (execError) {
+      logger.error("[four-eyes] Approved request failed to execute", { requestId: approved.id, execError });
+      return res.status(500).json({
+        error: "execution_failed",
+        message: "Approved but failed to execute — see server logs. The approval is recorded; it was not silently lost.",
+        request: approved,
+      });
+    }
+    return res.json({ request: approved });
+  } catch (error) {
+    if (error instanceof FourEyesError) {
+      const status = error.code === "not_found" ? 404 : 409;
+      return res.status(status).json({ error: error.code, message: error.message });
+    }
+    logger.error("Approve four-eyes request error", { error });
+    return res.status(500).json({ error: "failed_to_approve_request" });
+  }
+});
+
+adminRouter.post("/four-eyes/requests/:id/reject", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const approverAddress = req.user?.walletAddress ?? "admin-api-key";
+  try {
+    const rejected = await rejectRequest(String(req.params.id), approverAddress, String(req.body?.reason ?? ""));
+    return res.json({ request: rejected });
+  } catch (error) {
+    if (error instanceof FourEyesError) {
+      const status = error.code === "not_found" ? 404 : error.code === "missing_reason" ? 400 : 409;
+      return res.status(status).json({ error: error.code, message: error.message });
+    }
+    logger.error("Reject four-eyes request error", { error });
+    return res.status(500).json({ error: "failed_to_reject_request" });
   }
 });
 
