@@ -49,4 +49,19 @@ pub enum BridgeError {
 
     /// Invalid asset identifier.
     InvalidAsset = 14,
+
+    /// The mint would push this source chain's rolling daily volume over
+    /// its configured cap (issue #858).
+    DailyVolumeCapExceeded = 15,
+
+    /// `set_daily_cap` was asked to raise an existing positive cap — raises
+    /// must go through propose_daily_cap_increase / execute_daily_cap_increase
+    /// instead, since only raises are timelocked.
+    CapIncreaseRequiresTimelock = 16,
+
+    /// No pending cap increase exists for this source chain.
+    NoPendingCapIncrease = 17,
+
+    /// A pending cap increase exists but its timelock has not yet elapsed.
+    CapChangeTimelockActive = 18,
 }
