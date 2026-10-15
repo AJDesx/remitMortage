@@ -542,6 +542,16 @@ pub enum FeatureKey {
     KeeperRewardBps,
     /// Absolute ceiling, in token stroops, on a single keeper reward.
     KeeperRewardCap,
+    /// Aggregate principal of a borrower's approved, not-yet-closed loans.
+    /// Counted from `approve_loan` and released on full repayment, default
+    /// or assumption by another borrower. Absent means zero.
+    BorrowerExposure(Address),
+    /// Absolute ceiling on a borrower's aggregate exposure, in token stroops.
+    /// Absent or zero disables the absolute cap.
+    MaxBorrowerExposure,
+    /// Ceiling on a borrower's aggregate exposure as basis points of the
+    /// pool's total tranche capital. Absent or zero disables the relative cap.
+    MaxBorrowerExposureBps,
 }
 
 /// A pending loan assumption request where an existing borrower proposes to transfer
