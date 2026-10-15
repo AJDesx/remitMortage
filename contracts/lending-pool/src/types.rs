@@ -536,6 +536,12 @@ pub enum FeatureKey {
     /// Tracked separately so it can be reconciled and repaid to the insurance
     /// reserve as the pool recovers.
     TotalEmergencyInjected,
+    /// Keeper reward rate, in basis points of the collateral seized when a
+    /// third party triggers `trigger_default`. Absent or zero disables the
+    /// reward.
+    KeeperRewardBps,
+    /// Absolute ceiling, in token stroops, on a single keeper reward.
+    KeeperRewardCap,
 }
 
 /// A pending loan assumption request where an existing borrower proposes to transfer

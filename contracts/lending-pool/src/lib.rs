@@ -3357,6 +3357,100 @@ impl LendingPoolContract {
         let config = Self::read_config(&env)?;
         config.admin.require_auth();
 
+        Self::execute_default(&env, &config, &loan_id, None)
+    }
+
+    /// Permissionless variant of `mark_default`: any address may default a
+    /// loan that satisfies the same on-chain overdue criteria, and is paid a
+    /// keeper reward out of the seized collateral.
+    ///
+    /// The overdue check is shared with the admin path and runs before any
+    /// state changes, so a healthy loan reverts with `LoanNotOverdue` and the
+    /// caller is paid nothing. The reward is bounded by the seizure proceeds
+    /// (and the configured cap), so it can never touch investor principal.
+    pub fn trigger_default(
+        env: Env,
+        caller: Address,
+        loan_id: BytesN<32>,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        caller.require_auth();
+        let config = Self::read_config(&env)?;
+
+        Self::execute_default(&env, &config, &loan_id, Some(caller))
+    }
+
+    /// Configure the keeper reward paid by `trigger_default`. Admin-only.
+    ///
+    /// `reward_bps` is a share of the seized collateral (at most 10 000) and
+    /// `reward_cap` is the absolute ceiling per default, in token stroops.
+    /// Setting either to zero disables the reward.
+    pub fn set_keeper_reward(env: Env, reward_bps: u32, reward_cap: i128) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        if reward_bps > BPS_SCALE || reward_cap < 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        env.storage()
+            .instance()
+            .set(&FeatureKey::KeeperRewardBps, &reward_bps);
+        env.storage()
+            .instance()
+            .set(&FeatureKey::KeeperRewardCap, &reward_cap);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "keeper_reward_set"),),
+            (reward_bps, reward_cap),
+        );
+        Ok(())
+    }
+
+    /// The configured keeper reward as `(reward_bps, reward_cap)`.
+    pub fn get_keeper_reward(env: Env) -> (u32, i128) {
+        (
+            env.storage()
+                .instance()
+                .get(&FeatureKey::KeeperRewardBps)
+                .unwrap_or(0),
+            env.storage()
+                .instance()
+                .get(&FeatureKey::KeeperRewardCap)
+                .unwrap_or(0),
+        )
+    }
+
+    /// Keeper reward for a seizure of `seized_amount`: the configured share,
+    /// clamped to the cap and to the proceeds themselves. Zero when nothing
+    /// was seized.
+    fn compute_keeper_reward(env: &Env, seized_amount: i128) -> i128 {
+        if seized_amount <= 0 {
+            return 0;
+        }
+        let (bps, cap) = Self::get_keeper_reward(env.clone());
+        if bps == 0 || cap <= 0 {
+            return 0;
+        }
+        (seized_amount.saturating_mul(bps as i128) / BPS_SCALE as i128)
+            .min(cap)
+            .min(seized_amount)
+    }
+
+    /// Shared default routine. `keeper` is the caller of `trigger_default`, or
+    /// `None` for the admin path, which pays no reward.
+    fn execute_default(
+        env: &Env,
+        config: &PoolConfig,
+        loan_id: &BytesN<32>,
+        keeper: Option<Address>,
+    ) -> Result<(), PoolError> {
+        let env = env.clone();
+        let loan_id = loan_id.clone();
+
         let mut loan = Self::read_loan(&env, &loan_id)?;
 
         if loan.status != LoanStatus::Approved {
@@ -3395,6 +3489,26 @@ impl LendingPoolContract {
                 env.current_contract_address().into_val(&env)
             ],
         );
+
+        // Pay the keeper out of the seizure proceeds, never investor principal.
+        let keeper_reward = match &keeper {
+            Some(_) => Self::compute_keeper_reward(&env, seized_amount),
+            None => 0,
+        };
+        if let Some(keeper) = &keeper {
+            if keeper_reward > 0 {
+                Self::token_client(&env, &config.token).transfer(
+                    &env.current_contract_address(),
+                    keeper,
+                    &keeper_reward,
+                );
+                env.events().publish(
+                    (Symbol::new(&env, "keeper_rewarded"), loan_id.clone()),
+                    (keeper.clone(), keeper_reward),
+                );
+            }
+        }
+        let seized_amount = seized_amount - keeper_reward;
 
         let net_loss = gross_loss.saturating_sub(seized_amount);
 
@@ -7680,6 +7794,203 @@ mod test {
         // Loan is approved and current — not overdue.
         let result = client.try_mark_default(&loan_id);
         assert_eq!(result.unwrap_err(), Ok(PoolError::LoanNotOverdue));
+    }
+
+    // ── Permissionless keeper default (trigger_default) ───────────────────
+
+    /// Like `setup_overdue_loan`, but lets the caller pick whether the escrow
+    /// actually seizes collateral (5,000 via `MockEscrow`) or recovers nothing.
+    /// Returns (token_address, loan_id, client); `overdue` controls whether the
+    /// ledger is advanced past the default threshold.
+    fn setup_keeper_loan(
+        env: &Env,
+        seizes: bool,
+        overdue: bool,
+    ) -> (Address, BytesN<32>, LendingPoolContractClient<'_>) {
+        extend_test_ttls(env);
+        let admin = Address::generate(env);
+        let investor = Address::generate(env);
+        let junior_investor = Address::generate(env);
+
+        let token_id = env.register_stellar_asset_contract_v2(Address::generate(env));
+        let token_address = token_id.address();
+        let sac = StellarAssetClient::new(env, &token_address);
+        sac.mint(&investor, &70_000_0000000i128);
+        sac.mint(&junior_investor, &30_000_0000000i128);
+
+        let escrow = if seizes {
+            let escrow_id = env.register(MockEscrow, ());
+            env.invoke_contract::<()>(
+                &escrow_id,
+                &symbol_short!("set_token"),
+                soroban_sdk::vec![env, token_address.into_val(env)],
+            );
+            escrow_id
+        } else {
+            env.register(ZeroSeizureEscrow, ())
+        };
+
+        let contract_id = env.register(LendingPoolContract, ());
+        let client = LendingPoolContractClient::new(env, &contract_id);
+        client.initialize(
+            &admin,
+            &token_address,
+            &escrow,
+            &0u32,
+            &0u32,
+            &Address::generate(env),
+            &0u32,
+            &0u32,
+        );
+
+        client.deposit(&investor, &70_000_0000000i128, &Tranche::Senior);
+        client.deposit(&junior_investor, &30_000_0000000i128, &Tranche::Junior);
+
+        let borrower = Address::generate(env);
+        let loan_id = mock_loan_id(env);
+        client.request_loan(&borrower, &loan_id, &20_000_0000000i128);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &20_000_0000000i128);
+
+        if overdue {
+            make_loan_overdue(env, &client, &loan_id);
+        }
+
+        (token_address, loan_id, client)
+    }
+
+    #[test]
+    fn test_trigger_default_by_third_party_pays_keeper_reward() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (token, loan_id, client) = setup_keeper_loan(&env, true, true);
+        // 2% of the 5,000 seized = 100, well under the cap.
+        client.set_keeper_reward(&200u32, &1_000_0000000i128);
+
+        let keeper = Address::generate(&env);
+        client.trigger_default(&keeper, &loan_id);
+
+        let loan = client.get_loan_info(&loan_id);
+        assert_eq!(loan.status, LoanStatus::Defaulted);
+        assert_eq!(
+            soroban_sdk::token::TokenClient::new(&env, &token).balance(&keeper),
+            100_0000000i128
+        );
+        // The reward comes out of the seizure proceeds: 5,000 - 100 recovered.
+        assert_eq!(loan.repaid, 4_900_0000000i128);
+        assert_eq!(loan.outstanding_debt, 15_100_0000000i128);
+    }
+
+    #[test]
+    fn test_trigger_default_not_overdue_reverts_and_pays_nothing() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (token, loan_id, client) = setup_keeper_loan(&env, true, false);
+        client.set_keeper_reward(&200u32, &1_000_0000000i128);
+
+        let keeper = Address::generate(&env);
+        let result = client.try_trigger_default(&keeper, &loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::LoanNotOverdue));
+
+        assert_eq!(
+            soroban_sdk::token::TokenClient::new(&env, &token).balance(&keeper),
+            0
+        );
+        assert_eq!(client.get_loan_info(&loan_id).status, LoanStatus::Approved);
+    }
+
+    #[test]
+    fn test_trigger_default_reward_is_capped() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (token, loan_id, client) = setup_keeper_loan(&env, true, true);
+        // 10% of 5,000 would be 500, but the cap is 50.
+        client.set_keeper_reward(&1_000u32, &50_0000000i128);
+
+        let keeper = Address::generate(&env);
+        client.trigger_default(&keeper, &loan_id);
+
+        assert_eq!(
+            soroban_sdk::token::TokenClient::new(&env, &token).balance(&keeper),
+            50_0000000i128
+        );
+    }
+
+    #[test]
+    fn test_trigger_default_pays_no_reward_when_proceeds_are_zero() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (token, loan_id, client) = setup_keeper_loan(&env, false, true);
+        client.set_keeper_reward(&1_000u32, &50_0000000i128);
+
+        let keeper = Address::generate(&env);
+        client.trigger_default(&keeper, &loan_id);
+
+        let loan = client.get_loan_info(&loan_id);
+        assert_eq!(loan.status, LoanStatus::Defaulted);
+        assert_eq!(
+            soroban_sdk::token::TokenClient::new(&env, &token).balance(&keeper),
+            0
+        );
+        // No reward was carved out of investor principal: the full loss is booked.
+        assert_eq!(loan.outstanding_debt, 20_000_0000000i128);
+    }
+
+    #[test]
+    fn test_trigger_default_without_configured_reward_pays_nothing() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (token, loan_id, client) = setup_keeper_loan(&env, true, true);
+
+        let keeper = Address::generate(&env);
+        client.trigger_default(&keeper, &loan_id);
+
+        assert_eq!(
+            soroban_sdk::token::TokenClient::new(&env, &token).balance(&keeper),
+            0
+        );
+        assert_eq!(client.get_loan_info(&loan_id).repaid, 5_000_0000000i128);
+    }
+
+    #[test]
+    fn test_set_keeper_reward_rejects_invalid_config() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (_token, _loan_id, client) = setup_keeper_loan(&env, false, false);
+
+        assert_eq!(
+            client
+                .try_set_keeper_reward(&10_001u32, &1i128)
+                .unwrap_err(),
+            Ok(PoolError::InvalidAmount)
+        );
+        assert_eq!(
+            client.try_set_keeper_reward(&100u32, &-1i128).unwrap_err(),
+            Ok(PoolError::InvalidAmount)
+        );
+
+        client.set_keeper_reward(&100u32, &7i128);
+        assert_eq!(client.get_keeper_reward(), (100u32, 7i128));
+    }
+
+    #[test]
+    fn test_trigger_default_reverts_when_paused() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let (_token, loan_id, client) = setup_keeper_loan(&env, true, true);
+        client.pause();
+
+        let keeper = Address::generate(&env);
+        let result = client.try_trigger_default(&keeper, &loan_id);
+        assert_eq!(result.unwrap_err(), Ok(PoolError::ContractPaused));
     }
 
     #[test]
