@@ -552,6 +552,24 @@ pub enum FeatureKey {
     /// Ceiling on a borrower's aggregate exposure as basis points of the
     /// pool's total tranche capital. Absent or zero disables the relative cap.
     MaxBorrowerExposureBps,
+    /// Independent pause flag for one function group, alongside the global
+    /// pause. Absent means unpaused, so existing deployments are unaffected.
+    FunctionPaused(PauseGroup),
+}
+
+/// Function groups that can be paused independently of the global pause.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PauseGroup {
+    /// `deposit` / `deposit_with_cap`.
+    Deposits,
+    /// `withdraw`.
+    Withdrawals,
+    /// `request_loan` / `request_loan_with_origin`.
+    LoanRequests,
+    /// `repay` / `payoff_with_quote`. Pausable only on its own, so a problem
+    /// elsewhere never has to stop borrowers paying down their loans.
+    Repayments,
 }
 
 /// A pending loan assumption request where an existing borrower proposes to transfer

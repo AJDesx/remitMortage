@@ -18,7 +18,7 @@ mod test_loan_assumption;
 pub use crate::errors::{LoanAssumptionError, PoolError};
 pub use crate::types::{
     BatchDisburseItem, DataKey, FeatureKey, HalvingInfo, InvestorRecord, LoanAssumptionRequest,
-    LoanCollateralRecord, LoanPortabilitySnapshot, LoanRecord, LoanStatus, PayoffQuote,
+    LoanCollateralRecord, LoanPortabilitySnapshot, LoanRecord, LoanStatus, PauseGroup, PayoffQuote,
     PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche,
     TrancheInfo,
 };
@@ -1037,6 +1037,22 @@ impl LendingPoolContract {
         }
     }
 
+    /// Rejects the call when the global pause or the pause flag for `group`
+    /// is set. The global pause always wins, whatever the granular flags say.
+    fn check_function_not_paused(env: &Env, group: PauseGroup) -> Result<(), PoolError> {
+        Self::check_not_paused(env)?;
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&FeatureKey::FunctionPaused(group))
+            .unwrap_or(false);
+        if paused {
+            Err(PoolError::ContractPaused)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Settle a quoted payoff at exactly the locked amount.
     ///
     /// The caller has already verified a live quote and `amount ==
@@ -1471,7 +1487,7 @@ impl LendingPoolContract {
         tranche: Tranche,
         first_loss_cap_bps: Option<u32>,
     ) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::Deposits)?;
         Self::check_whitelist(&env, &investor)?;
         investor.require_auth();
         Self::non_reentrant(&env, || {
@@ -1628,7 +1644,7 @@ impl LendingPoolContract {
         loan_id: BytesN<32>,
         principal: i128,
     ) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::LoanRequests)?;
         Self::check_whitelist(&env, &borrower)?;
         borrower.require_auth();
         Self::do_request_loan(&env, borrower, loan_id, principal, None)
@@ -1641,7 +1657,7 @@ impl LendingPoolContract {
         principal: i128,
         escrow_origin: Address,
     ) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::LoanRequests)?;
         Self::check_whitelist(&env, &borrower)?;
         borrower.require_auth();
         Self::do_request_loan(&env, borrower, loan_id, principal, Some(escrow_origin))
@@ -2780,7 +2796,7 @@ impl LendingPoolContract {
         loan_id: BytesN<32>,
         amount: i128,
     ) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::Repayments)?;
         borrower.require_auth();
 
         if amount <= 0 {
@@ -3142,7 +3158,7 @@ impl LendingPoolContract {
         loan_id: BytesN<32>,
         amount: i128,
     ) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::Repayments)?;
         borrower.require_auth();
         if amount <= 0 {
             return Err(PoolError::InvalidAmount);
@@ -3843,7 +3859,7 @@ impl LendingPoolContract {
     /// The fee is deducted from the withdrawal amount and transferred to the
     /// protocol treasury address. The net amount is transferred to the investor.
     pub fn withdraw(env: Env, investor: Address, amount: i128) -> Result<(), PoolError> {
-        Self::check_not_paused(&env)?;
+        Self::check_function_not_paused(&env, PauseGroup::Withdrawals)?;
         Self::check_whitelist(&env, &investor)?;
         investor.require_auth();
         Self::non_reentrant(&env, || {
@@ -4365,6 +4381,39 @@ impl LendingPoolContract {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
+    }
+
+    /// Pause or unpause a single function group. Admin-only.
+    ///
+    /// The flags are independent of one another and of the global pause:
+    /// pausing withdrawals leaves deposits and repayments running, while the
+    /// global `pause` still halts everything regardless of these flags. All
+    /// flags default to unpaused. Emits `fn_pause_set` with the group, the new
+    /// state and the admin who made the change.
+    pub fn set_function_paused(env: Env, group: PauseGroup, paused: bool) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&FeatureKey::FunctionPaused(group), &paused);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "fn_pause_set"), group),
+            (paused, config.admin),
+        );
+        Ok(())
+    }
+
+    /// Whether `group` is individually paused. Does not reflect the global pause.
+    pub fn is_function_paused(env: Env, group: PauseGroup) -> bool {
+        env.storage()
+            .instance()
+            .get(&FeatureKey::FunctionPaused(group))
+            .unwrap_or(false)
     }
 
     // ── Admin Transfer ─────────────────────────────────────────────────
@@ -7779,6 +7828,237 @@ mod test {
 
         let result = client.try_claim_yield(&investor);
         assert_eq!(result.unwrap_err(), Ok(PoolError::ContractPaused));
+    }
+
+    // ── Granular function-level pause flags ──────────────────────────────
+
+    /// Pool with an approved, fully disbursed 10,000 loan and 50,000 of
+    /// capital. Returns (client, extra_investor, borrower, loan_id, token).
+    fn setup_granular_pause_pool(
+        env: &Env,
+    ) -> (
+        LendingPoolContractClient<'_>,
+        Address,
+        Address,
+        BytesN<32>,
+        Address,
+    ) {
+        extend_test_ttls(env);
+        let (_admin, investor, _treasury, token_address, client) =
+            setup_pool_with_rates(env, 0u32, 0u32);
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+
+        let borrower = Address::generate(env);
+        let loan_id = mock_loan_id(env);
+        client.request_loan(&borrower, &loan_id, &10_000_0000000i128);
+        client.approve_loan(&loan_id);
+        client.add_contractor(&borrower);
+        client.disburse(&loan_id, &borrower, &10_000_0000000i128);
+
+        let sac = StellarAssetClient::new(env, &token_address);
+        sac.mint(&borrower, &1_000_0000000i128);
+        (client, investor, borrower, loan_id, token_address)
+    }
+
+    /// Attempt one call in each guarded group and report whether it went
+    /// through, in the order [deposit, withdraw, request_loan, repay]. A
+    /// rejected call changes nothing, so the probes can be repeated.
+    fn probe_groups(
+        env: &Env,
+        client: &LendingPoolContractClient<'_>,
+        investor: &Address,
+        borrower: &Address,
+        loan_id: &BytesN<32>,
+        token: &Address,
+        nonce: u8,
+    ) -> [bool; 4] {
+        let depositor = Address::generate(env);
+        StellarAssetClient::new(env, token).mint(&depositor, &10_0000000i128);
+        let new_loan = BytesN::from_array(env, &[nonce; 32]);
+
+        [
+            client
+                .try_deposit(&depositor, &10_0000000i128, &Tranche::Senior)
+                .is_ok(),
+            client.try_withdraw(investor, &10_0000000i128).is_ok(),
+            client
+                .try_request_loan(&Address::generate(env), &new_loan, &1_0000000i128)
+                .is_ok(),
+            client.try_repay(borrower, loan_id, &1_0000000i128).is_ok(),
+        ]
+    }
+
+    #[test]
+    fn test_granular_pause_flags_default_to_unpaused() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, investor, borrower, loan_id, token) = setup_granular_pause_pool(&env);
+
+        for group in [
+            PauseGroup::Deposits,
+            PauseGroup::Withdrawals,
+            PauseGroup::LoanRequests,
+            PauseGroup::Repayments,
+        ] {
+            assert!(!client.is_function_paused(&group));
+        }
+        assert_eq!(
+            probe_groups(&env, &client, &investor, &borrower, &loan_id, &token, 0x01),
+            [true; 4]
+        );
+    }
+
+    #[test]
+    fn test_each_granular_pause_flag_blocks_only_its_own_group() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, investor, borrower, loan_id, token) = setup_granular_pause_pool(&env);
+
+        let groups = [
+            PauseGroup::Deposits,
+            PauseGroup::Withdrawals,
+            PauseGroup::LoanRequests,
+            PauseGroup::Repayments,
+        ];
+        for (i, group) in groups.iter().enumerate() {
+            client.set_function_paused(group, &true);
+            assert!(client.is_function_paused(group));
+
+            let mut expected = [true; 4];
+            expected[i] = false;
+            assert_eq!(
+                probe_groups(
+                    &env,
+                    &client,
+                    &investor,
+                    &borrower,
+                    &loan_id,
+                    &token,
+                    0x10 + i as u8
+                ),
+                expected,
+                "only {:?} should be blocked",
+                group
+            );
+
+            client.set_function_paused(group, &false);
+            assert!(!client.is_function_paused(group));
+        }
+    }
+
+    #[test]
+    fn test_pausing_withdrawals_alone_leaves_deposits_and_repayments_working() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, investor, borrower, loan_id, _token) = setup_granular_pause_pool(&env);
+
+        client.set_function_paused(&PauseGroup::Withdrawals, &true);
+
+        assert_eq!(
+            client.try_withdraw(&investor, &10_0000000i128).unwrap_err(),
+            Ok(PoolError::ContractPaused)
+        );
+        client.deposit(&investor, &10_0000000i128, &Tranche::Senior);
+        client.repay(&borrower, &loan_id, &1_0000000i128);
+    }
+
+    #[test]
+    fn test_repayments_stay_open_while_every_other_group_is_paused() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, investor, borrower, loan_id, token) = setup_granular_pause_pool(&env);
+
+        client.set_function_paused(&PauseGroup::Deposits, &true);
+        client.set_function_paused(&PauseGroup::Withdrawals, &true);
+        client.set_function_paused(&PauseGroup::LoanRequests, &true);
+
+        assert_eq!(
+            probe_groups(&env, &client, &investor, &borrower, &loan_id, &token, 0x20),
+            [false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn test_global_pause_halts_everything_regardless_of_granular_flags() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, investor, borrower, loan_id, token) = setup_granular_pause_pool(&env);
+
+        // Global pause with every granular flag clear.
+        client.pause();
+        assert_eq!(
+            probe_groups(&env, &client, &investor, &borrower, &loan_id, &token, 0x30),
+            [false; 4]
+        );
+
+        // Setting and clearing granular flags under the global pause changes nothing.
+        client.set_function_paused(&PauseGroup::Repayments, &true);
+        client.set_function_paused(&PauseGroup::Repayments, &false);
+        assert_eq!(
+            probe_groups(&env, &client, &investor, &borrower, &loan_id, &token, 0x31),
+            [false; 4]
+        );
+
+        // Lifting the global pause restores everything that is not individually paused.
+        client.set_function_paused(&PauseGroup::Deposits, &true);
+        client.unpause();
+        assert_eq!(
+            probe_groups(&env, &client, &investor, &borrower, &loan_id, &token, 0x32),
+            [false, true, true, true]
+        );
+    }
+
+    #[test]
+    fn test_set_function_paused_is_admin_only() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, ..) = setup_granular_pause_pool(&env);
+
+        env.set_auths(&[]);
+        let result = client.try_set_function_paused(&PauseGroup::Deposits, &true);
+        assert!(result.is_err());
+        assert!(!client.is_function_paused(&PauseGroup::Deposits));
+    }
+
+    #[test]
+    fn test_set_function_paused_emits_event_naming_the_group() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, ..) = setup_granular_pause_pool(&env);
+
+        client.set_function_paused(&PauseGroup::Withdrawals, &true);
+
+        let emitted = env.events().all().iter().any(|(_, topics, data)| {
+            let name_matches = topics
+                .get(0)
+                .map(|t| {
+                    <Symbol as soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>::try_from_val(
+                        &env, &t,
+                    )
+                    .ok()
+                        == Some(Symbol::new(&env, "fn_pause_set"))
+                })
+                .unwrap_or(false);
+            let group_matches = topics
+                .get(1)
+                .map(|t| {
+                    <PauseGroup as soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>::try_from_val(
+                        &env, &t,
+                    )
+                    .ok()
+                        == Some(PauseGroup::Withdrawals)
+                })
+                .unwrap_or(false);
+            let admin = client.get_pool_config().admin;
+            let data_matches = <(bool, Address) as soroban_sdk::TryFromVal<
+                Env,
+                soroban_sdk::Val,
+            >>::try_from_val(&env, &data)
+            .ok()
+                == Some((true, admin));
+            name_matches && group_matches && data_matches
+        });
+        assert!(emitted);
     }
 
     #[test]
