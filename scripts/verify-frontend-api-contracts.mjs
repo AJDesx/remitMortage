@@ -11,6 +11,19 @@ const [spec, contract, mocks] = await Promise.all([
 const errors = [];
 const expectedKeys = new Set();
 
+function requiredProperties(schema, seen = new Set()) {
+  if (!schema) return new Set();
+  if (schema.$ref) {
+    if (seen.has(schema.$ref)) return new Set();
+    seen.add(schema.$ref);
+    const target = schema.$ref.replace(/^#\//, "").split("/").reduce((value, part) => value?.[part.replace(/~1/g, "/").replace(/~0/g, "~")], spec);
+    return requiredProperties(target, seen);
+  }
+  const properties = new Set(schema.required ?? []);
+  for (const child of schema.allOf ?? []) for (const property of requiredProperties(child, seen)) properties.add(property);
+  return properties;
+}
+
 for (const endpoint of contract.endpoints) {
   const key = `${endpoint.method.toUpperCase()} ${endpoint.path}`;
   expectedKeys.add(key);
@@ -22,6 +35,13 @@ for (const endpoint of contract.endpoints) {
   for (const status of endpoint.responses) {
     if (!operation.responses?.[String(status)]) errors.push(`${key}: backend OpenAPI no longer declares response ${status}`);
     if (!mocks[key]?.[String(status)]) errors.push(`${key}: frontend mock is missing response ${status}`);
+  }
+  const successSchema = operation.responses?.[String(endpoint.successStatus)]?.content?.["application/json"]?.schema;
+  const backendFields = requiredProperties(successSchema);
+  const mockFields = new Set(Object.keys(mocks[key]?.[String(endpoint.successStatus)] ?? {}));
+  for (const field of endpoint.requiredFields ?? []) {
+    if (!backendFields.has(field)) errors.push(`${key}: backend response schema no longer requires ${field}`);
+    if (!mockFields.has(field)) errors.push(`${key}: frontend success mock is missing ${field}`);
   }
   for (const status of Object.keys(mocks[key] ?? {})) {
     if (!endpoint.responses.map(String).includes(status)) errors.push(`${key}: frontend mock has undeclared response ${status}`);
