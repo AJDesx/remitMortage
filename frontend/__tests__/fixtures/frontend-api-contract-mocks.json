@@ -1,0 +1,22 @@
+{
+  "GET /api/analytics/overview": {
+    "200": { "totalLoans": 12, "totalBorrowed": 950000, "averageInterestRate": 8.5 }
+  },
+  "POST /api/verification/check": {
+    "200": { "success": true, "score": 720 },
+    "400": { "error": "invalid_request" }
+  },
+  "POST /api/verification/challenge": {
+    "200": { "challenge": "test-challenge", "expiresAt": "2030-01-01T00:00:00.000Z" },
+    "400": { "error": "invalid_address" }
+  },
+  "POST /api/kyc/{address}/upload": {
+    "201": { "documentId": "test-document", "scanStatus": "clean" },
+    "400": { "error": "missing_file" },
+    "403": { "error": "forbidden" }
+  },
+  "POST /api/admin/loans/bulk-review": {
+    "200": { "approved": 1, "rejected": 0 },
+    "400": { "error": "invalid_request" }
+  }
+}
