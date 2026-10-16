@@ -49,6 +49,13 @@ jobs:
           scripts/teardown-preview-env.sh pr "${PR_NUMBER}" \
             | tee /tmp/preview-teardown.log
 
+      - name: Tear Down PR Preview Database
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+        # Appends to the same log so the comment below lists the database too.
+        run: node scripts/preview-db.mjs teardown --pr "${PR_NUMBER}" | tee -a /tmp/preview-teardown.log
+
       - name: Post Teardown Confirmation Comment
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
