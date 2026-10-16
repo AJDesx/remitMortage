@@ -96,6 +96,22 @@ const MAX_VOLUME_MONTHS = 24;
  *     responses:
  *       200:
  *         description: Protocol summary.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [tvl, totalBorrowers, totalInvestors, totalLoans]
+ *               properties:
+ *                 tvl:
+ *                   type: object
+ *                   required: [escrow, lendingPool, total]
+ *                   properties:
+ *                     escrow: { type: string }
+ *                     lendingPool: { type: string }
+ *                     total: { type: string }
+ *                 totalBorrowers: { type: integer }
+ *                 totalInvestors: { type: integer }
+ *                 totalLoans: { type: integer }
  */
 analyticsRouter.get("/overview", cacheMiddleware(60), async (req, res) => {
   try {
