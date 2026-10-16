@@ -1,0 +1,20 @@
+# Known-benign exceptions, loaded after rules.yaml. Append new entries here;
+# each needs a comment with the owner, reason and (if temporary) expiry.
+# Format and review process: docs/FALCO_RUNTIME_DETECTION.md#adding-an-exception.
+
+# Debug pods created by the platform team's `kubectl debug` tooling.
+- rule: Shell Spawned in RemitMortgage Production Container
+  exceptions:
+    - name: known_benign_shell
+      values:
+        - [remitmortgage, remitmortgage-debug-]
+  append: true
+
+# Stellar Horizon / Soroban RPC is reached on 443 (allowlisted); the metrics
+# push gateway listens on 9091 on a public address.
+- rule: Unexpected Outbound Connection from RemitMortgage Container
+  exceptions:
+    - name: known_benign_egress
+      values:
+        - [remitmortgage/backend, 203.0.113.10]
+  append: true

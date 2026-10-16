@@ -37,6 +37,12 @@ jobs:
         run: |
           conftest test --policy devops/k8s/policy devops/k8s/*.yaml
 
+      - name: Validate PodDisruptionBudgets and topology spread
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 scripts/test_check_k8s_availability.py
+          python3 scripts/check-k8s-availability.py devops/k8s
+
   # ── Backend CI ──────────────────────────────────────────────────────────
   backend-ci:
     name: Backend CI (Express & TS)

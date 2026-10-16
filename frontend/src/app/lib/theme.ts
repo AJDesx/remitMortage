@@ -3,8 +3,13 @@
 
 const THEME_STORAGE_KEY = "remitmortgage-theme";
 const PALETTE_STORAGE_KEY = "remitmortgage-palette";
+const MODE_STORAGE_KEY = "remitmortgage-theme-mode";
+const SCHEDULE_STORAGE_KEY = "remitmortgage-theme-schedule";
 
-export type Theme = "light" | "dark";
+import { DEFAULT_SCHEDULE, isValidSchedule } from "./theme-schedule";
+import type { Theme, ThemeMode, ThemeSchedule } from "./theme-schedule";
+
+export type { Theme, ThemeMode, ThemeSchedule };
 export type ColorPalette = "default" | "colorblind";
 
 export interface ThemeConfig {
@@ -19,6 +24,12 @@ export function getStoredTheme(): Theme | null {
   const stored = localStorage.getItem(THEME_STORAGE_KEY);
   if (stored === "light" || stored === "dark") return stored;
   return null;
+}
+
+export function isSystemDark(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-color-scheme: dark)").matches
+    : true;
 }
 
 export function getSystemTheme(): Theme {
@@ -53,6 +64,40 @@ export function persistPalette(p: ColorPalette) {
   localStorage.setItem(PALETTE_STORAGE_KEY, p);
 }
 
+// ── Mode (system/scheduled/manual) + schedule ─────────────────────────────────
+
+/** Without a stored mode, an explicit past choice means manual; otherwise follow the system. */
+export function resolveMode(): ThemeMode {
+  if (typeof window === "undefined") return "system";
+  const stored = localStorage.getItem(MODE_STORAGE_KEY);
+  if (stored === "system" || stored === "scheduled" || stored === "manual") return stored;
+  return getStoredTheme() ? "manual" : "system";
+}
+
+export function persistMode(mode: ThemeMode) {
+  localStorage.setItem(MODE_STORAGE_KEY, mode);
+}
+
+export function resolveSchedule(): ThemeSchedule {
+  if (typeof window === "undefined") return DEFAULT_SCHEDULE;
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SCHEDULE_STORAGE_KEY) ?? "null");
+    return isValidSchedule(parsed) ? parsed : DEFAULT_SCHEDULE;
+  } catch {
+    return DEFAULT_SCHEDULE;
+  }
+}
+
+export function persistSchedule(schedule: ThemeSchedule) {
+  localStorage.setItem(SCHEDULE_STORAGE_KEY, JSON.stringify(schedule));
+}
+
+export function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    : false;
+}
+
 // ── Combined Theme Config ──────────────────────────────────────────────────────
 
 export function resolveThemeConfig(): ThemeConfig {
@@ -62,9 +107,17 @@ export function resolveThemeConfig(): ThemeConfig {
   };
 }
 
-export function applyThemeConfig(config: ThemeConfig) {
-  document.documentElement.setAttribute("data-theme", config.theme);
-  document.documentElement.setAttribute("data-palette", config.palette);
+export function applyThemeConfig(config: ThemeConfig, opts: { animate?: boolean } = {}) {
+  const root = document.documentElement;
+  const changed = root.getAttribute("data-theme") !== config.theme;
+  // Fade only automatic switches, and never under reduced motion.
+  if (opts.animate && changed && !prefersReducedMotion()) {
+    root.classList.add("theme-transition");
+    window.setTimeout(() => root.classList.remove("theme-transition"), 400);
+  }
+  root.setAttribute("data-theme", config.theme);
+  root.style.colorScheme = config.theme;
+  root.setAttribute("data-palette", config.palette);
 }
 
 export function persistThemeConfig(config: ThemeConfig) {
