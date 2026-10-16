@@ -15,7 +15,7 @@ for (const name of (await readdir(workflowDir)).filter((file) => file.endsWith("
   const file = path.join(workflowDir, name);
   const lines = (await readFile(file, "utf8")).split(/\r?\n/);
   lines.forEach((line, index) => {
-    const match = line.match(/^\s*uses:\s*([^\s#]+)(?:\s+#\s*(.*))?\s*$/);
+    const match = line.match(/^\s*(?:-\s*)?uses:\s*([^\s#]+)(?:\s+#\s*(.*))?\s*$/);
     if (!match) return;
     const [, reference, comment = ""] = match;
     if (reference.startsWith("./") || reference.startsWith("docker://")) return;
