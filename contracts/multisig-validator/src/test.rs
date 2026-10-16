@@ -6,8 +6,8 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    vec, Address, BytesN, Env, Vec,
+    testutils::{Address as _, Events, Ledger},
+    vec, Address, BytesN, Env, Symbol, TryFromVal, Vec,
 };
 
 fn key(env: &Env, b: u8) -> BytesN<32> {
@@ -1136,4 +1136,171 @@ fn test_decay_interaction_with_slashing() {
     client.cast_vote(&account, &signer);
     // After 3, penalized cleared -> 100
     assert_eq!(client.effective_weight(&account, &signer), 100u32);
+}
+
+// ── Atomic multi-action proposals ───────────────────────────────────────────
+
+fn action(env: &Env, id_byte: u8, label: &str) -> Action {
+    Action {
+        action_id: key(env, id_byte),
+        label: Symbol::new(env, label),
+    }
+}
+
+fn approve_with_full_set(env: &Env, client: &MultisigValidatorClient<'_>, account: &Address, pid: &BytesN<32>) {
+    let keys: Vec<BytesN<32>> = vec![env, key(env, 0xA1), key(env, 0xB2)];
+    client.approve_action(account, pid, &keys);
+}
+
+#[test]
+fn test_submit_proposal_stores_ordered_actions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x01);
+
+    let actions: Vec<Action> = vec![
+        &env,
+        action(&env, 0x10, "set_fee"),
+        action(&env, 0x11, "set_rate"),
+    ];
+    client.submit_proposal(&pid, &0u32, &actions);
+
+    let proposal = client.get_proposal(&pid);
+    assert_eq!(proposal.state, ProposalState::Pending);
+    assert_eq!(proposal.actions.len(), 2u32);
+    assert_eq!(proposal.actions.get_unchecked(0).action_id, key(&env, 0x10));
+    assert_eq!(proposal.actions.get_unchecked(1).action_id, key(&env, 0x11));
+}
+
+#[test]
+fn test_submit_proposal_rejects_too_many_actions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x02);
+
+    let mut actions: Vec<Action> = Vec::new(&env);
+    for i in 0..(MAX_ACTIONS_PER_PROPOSAL + 1) {
+        actions.push_back(action(&env, i as u8, "a"));
+    }
+
+    let res = client.try_submit_proposal(&pid, &0u32, &actions);
+    assert_eq!(res, Err(Ok(ValidatorError::TooManyActions)));
+}
+
+#[test]
+fn test_submit_proposal_accepts_exactly_the_cap() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x03);
+
+    let mut actions: Vec<Action> = Vec::new(&env);
+    for i in 0..MAX_ACTIONS_PER_PROPOSAL {
+        actions.push_back(action(&env, i as u8, "a"));
+    }
+
+    client.submit_proposal(&pid, &0u32, &actions);
+    assert_eq!(client.get_proposal(&pid).actions.len(), MAX_ACTIONS_PER_PROPOSAL);
+}
+
+#[test]
+fn test_execute_proposal_emits_per_action_and_summary_events_in_order() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x04);
+
+    let actions: Vec<Action> = vec![
+        &env,
+        action(&env, 0x20, "set_fee"),
+        action(&env, 0x21, "set_rate"),
+        action(&env, 0x22, "set_cap"),
+    ];
+    client.submit_proposal(&pid, &0u32, &actions);
+    approve_with_full_set(&env, &client, &account, &pid);
+    env.ledger().set_timestamp(1_000_011);
+
+    // Only events from this call matter — note how many exist beforehand
+    // (submit_proposal already published one) and check from there.
+    let before = env.events().all().len();
+    client.execute_action(&pid);
+    let all_events = env.events().all();
+
+    assert_eq!(client.get_proposal(&pid).state, ProposalState::Executed);
+    // Three per-action events plus one summary event.
+    assert_eq!(all_events.len(), before + 4);
+
+    for (offset, expected_id) in [(0u32, 0x20u8), (1u32, 0x21u8), (2u32, 0x22u8)] {
+        let (_, topics, data) = all_events.get(before + offset).unwrap();
+        assert_eq!(
+            Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap(),
+            symbol_short!("act_exec")
+        );
+        let topic_pid: BytesN<32> = TryFromVal::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+        assert_eq!(topic_pid, pid);
+        let (index, action_id, _label): (u32, BytesN<32>, Symbol) =
+            TryFromVal::try_from_val(&env, &data).unwrap();
+        assert_eq!(index, offset);
+        assert_eq!(action_id, key(&env, expected_id));
+    }
+
+    let (_, summary_topics, summary_data) = all_events.get(before + 3).unwrap();
+    assert_eq!(
+        Symbol::try_from_val(&env, &summary_topics.get(0).unwrap()).unwrap(),
+        symbol_short!("mprop_exe")
+    );
+    let (summary_pid, count): (BytesN<32>, u32) =
+        TryFromVal::try_from_val(&env, &summary_data).unwrap();
+    assert_eq!(summary_pid, pid);
+    assert_eq!(count, 3u32);
+}
+
+#[test]
+fn test_execute_proposal_with_duplicate_action_id_reverts_with_no_partial_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x05);
+
+    // Action at index 2 duplicates the action_id at index 0 — the failure is
+    // in the middle/end of the list, after two individually-valid entries.
+    let actions: Vec<Action> = vec![
+        &env,
+        action(&env, 0x30, "set_fee"),
+        action(&env, 0x31, "set_rate"),
+        action(&env, 0x30, "set_cap"),
+    ];
+    client.submit_proposal(&pid, &0u32, &actions);
+    approve_with_full_set(&env, &client, &account, &pid);
+    env.ledger().set_timestamp(1_000_011);
+
+    let before = env.events().all().len();
+    let res = client.try_execute_action(&pid);
+    assert_eq!(res, Err(Ok(ValidatorError::DuplicateActionId)));
+
+    // No partial state: the proposal is still Locked, not Executed, and no
+    // new events (not even for the two individually-valid earlier actions)
+    // were published by the failed call.
+    assert_eq!(client.get_proposal(&pid).state, ProposalState::Locked);
+    assert_eq!(env.events().all().len(), before);
+}
+
+#[test]
+fn test_submit_action_still_works_as_a_zero_action_proposal() {
+    // Backward compatibility: the original single-id submit_action path is
+    // unchanged and simply carries an empty action list.
+    let env = Env::default();
+    env.mock_all_auths();
+    let (account, client) = setup_with_timelock(&env);
+    let pid = proposal_id(&env, 0x06);
+
+    client.submit_action(&pid, &0u32);
+    assert_eq!(client.get_proposal(&pid).actions.len(), 0u32);
+
+    approve_with_full_set(&env, &client, &account, &pid);
+    env.ledger().set_timestamp(1_000_011);
+    client.execute_action(&pid);
+    assert_eq!(client.get_proposal(&pid).state, ProposalState::Executed);
 }

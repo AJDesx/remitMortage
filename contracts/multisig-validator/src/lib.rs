@@ -8,8 +8,8 @@ mod types;
 
 pub use crate::errors::ValidatorError;
 pub use crate::types::{
-    AdminMultisigConfig, DataKey, DecayConfig, MultisigConfig, Proposal, ProposalState, Signer,
-    SignerVoteRecord, SlashingConfig, TimelockConfig,
+    Action, AdminMultisigConfig, DataKey, DecayConfig, MultisigConfig, Proposal, ProposalState,
+    Signer, SignerVoteRecord, SlashingConfig, TimelockConfig,
 };
 
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, Vec};
@@ -32,6 +32,12 @@ const DEFAULT_PROPOSAL_EXPIRY_LEDGERS: u32 = 518_400;
 /// Compact default used in tests so expiry can be crossed with small ledger advances.
 #[cfg(test)]
 const DEFAULT_PROPOSAL_EXPIRY_LEDGERS: u32 = 1_000;
+
+/// Maximum number of actions a single atomic multi-action proposal may carry.
+/// Bounds the per-execution event-emission and duplicate-check work, both of
+/// which scale linearly (and for the duplicate check, quadratically) with the
+/// action count.
+const MAX_ACTIONS_PER_PROPOSAL: u32 = 10;
 
 /// Multisig Threshold Validator
 ///
@@ -308,6 +314,7 @@ impl MultisigValidator {
             ready_at: 0,
             created_at: now,
             expiration_ledger: effective_expiry,
+            actions: Vec::new(&env),
         };
         env.storage()
             .persistent()
@@ -316,6 +323,63 @@ impl MultisigValidator {
         env.events().publish(
             (symbol_short!("submitted"),),
             (proposal_id, effective_expiry),
+        );
+
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Submit a new atomic multi-action proposal: an ordered list of actions
+    /// that all execute together on `execute_action`, or none do. Related
+    /// admin changes (e.g. updating a fee and a rate together) that would
+    /// otherwise need separate proposals — and could leave the system in an
+    /// inconsistent intermediate state between their individual executions —
+    /// can be bundled into one proposal instead.
+    ///
+    /// `actions` must not exceed `MAX_ACTIONS_PER_PROPOSAL`, and every
+    /// `action_id` within the list must be unique (checked again, defensively,
+    /// at execution time). Approval and the timelock apply to the bundle as a
+    /// whole via the existing `approve_action`/`execute_action` entry points —
+    /// there is no per-action approval.
+    ///
+    /// # Arguments
+    /// - `proposal_id`       — Unique 32-byte identifier for the bundle.
+    /// - `expiration_ledger` — Same semantics as `submit_action`; `0` uses the
+    ///   protocol default.
+    /// - `actions`           — Ordered list of actions, executed in this order.
+    pub fn submit_proposal(
+        env: Env,
+        proposal_id: BytesN<32>,
+        expiration_ledger: u32,
+        actions: Vec<Action>,
+    ) -> Result<(), ValidatorError> {
+        if actions.len() > MAX_ACTIONS_PER_PROPOSAL {
+            return Err(ValidatorError::TooManyActions);
+        }
+
+        let now = env.ledger().timestamp();
+        let current_seq = env.ledger().sequence();
+
+        let effective_expiry = if expiration_ledger == 0 {
+            current_seq.saturating_add(DEFAULT_PROPOSAL_EXPIRY_LEDGERS)
+        } else {
+            expiration_ledger
+        };
+
+        let proposal = Proposal {
+            state: ProposalState::Pending,
+            ready_at: 0,
+            created_at: now,
+            expiration_ledger: effective_expiry,
+            actions: actions.clone(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::ActionProposal(proposal_id.clone()), &proposal);
+
+        env.events().publish(
+            (symbol_short!("mprop_sub"),),
+            (proposal_id, effective_expiry, actions.len()),
         );
 
         Self::bump_instance(&env);
@@ -417,11 +481,49 @@ impl MultisigValidator {
             return Err(ValidatorError::TimelockNotElapsed);
         }
 
+        // Validate the whole action list BEFORE emitting or writing anything,
+        // so a failure anywhere in the bundle leaves no partial trace — not
+        // even a per-action event for an earlier, individually-valid entry.
+        Self::check_no_duplicate_actions(&proposal.actions)?;
+
+        // Only after every action passes validation do we start emitting —
+        // per-action events first, in proposal order, then the state flip and
+        // summary event. If this contract call were to fail partway through
+        // for any reason, Soroban's own all-or-nothing invocation semantics
+        // discard every write and event made so far, so there is still no
+        // observable partial execution even with events interleaved here.
+        for index in 0..proposal.actions.len() {
+            let action = proposal.actions.get_unchecked(index);
+            env.events().publish(
+                (symbol_short!("act_exec"), proposal_id.clone()),
+                (index, action.action_id.clone(), action.label.clone()),
+            );
+        }
+
         proposal.state = ProposalState::Executed;
         env.storage()
             .persistent()
-            .set(&DataKey::ActionProposal(proposal_id), &proposal);
+            .set(&DataKey::ActionProposal(proposal_id.clone()), &proposal);
+
+        env.events().publish(
+            (symbol_short!("mprop_exe"),),
+            (proposal_id, proposal.actions.len()),
+        );
+
         Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Returns `DuplicateActionId` if any two actions in `actions` share the
+    /// same `action_id`. O(n^2), which is fine given `MAX_ACTIONS_PER_PROPOSAL`.
+    fn check_no_duplicate_actions(actions: &Vec<Action>) -> Result<(), ValidatorError> {
+        for i in 0..actions.len() {
+            for j in (i + 1)..actions.len() {
+                if actions.get_unchecked(i).action_id == actions.get_unchecked(j).action_id {
+                    return Err(ValidatorError::DuplicateActionId);
+                }
+            }
+        }
         Ok(())
     }
 
