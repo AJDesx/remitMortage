@@ -205,5 +205,10 @@ export async function reconstructLoanApplicationAt(
     reason: snapshot.reason ?? undefined,
     createdAt: record.createdAt.toISOString(),
     updatedAt: updatedAt.toISOString(),
+    // A reconstructed point-in-time view is read-only and carries no live
+    // concurrency token (issue #846). Version 0 never matches a real row,
+    // so accidentally replaying `expectedVersion` from this payload is
+    // always rejected as stale instead of overwriting the current record.
+    version: 0,
   };
 }

@@ -140,6 +140,7 @@ export async function assignReviewerToApplication(
         assignedReviewerId: next.id,
         assignedReviewerEmail: next.email ?? null,
         assignedAt,
+        version: { increment: 1 },
       },
     });
   });
@@ -223,6 +224,7 @@ export async function reassignApplicationReviewer(
         assignedReviewerId: reviewerId,
         assignedReviewerEmail: reviewer.email ?? null,
         assignedAt,
+        version: { increment: 1 },
       },
     });
     if (tx.auditLog) {

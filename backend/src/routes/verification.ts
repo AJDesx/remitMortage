@@ -53,6 +53,17 @@ export const verificationRouter = Router();
  *     responses:
  *       200:
  *         description: Remittance analysis completed.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/RemittanceAnalysis'
+ *                 - type: object
+ *                   required: [reportId, generatedAt, reportHash]
+ *                   properties:
+ *                     reportId: { type: string, format: uuid }
+ *                     generatedAt: { type: string, format: date-time }
+ *                     reportHash: { type: string }
  *       400:
  *         description: Required request fields are missing.
  *       500:
@@ -231,6 +242,13 @@ verificationRouter.post("/score", validateVerificationBody, async (req, res) => 
  *     responses:
  *       200:
  *         description: Challenge string to sign.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [challenge]
+ *               properties:
+ *                 challenge: { type: string }
  *       400:
  *         description: Invalid or missing walletAddress / network.
  */

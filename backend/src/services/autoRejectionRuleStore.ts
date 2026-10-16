@@ -107,7 +107,7 @@ export async function applyAutoRejectionIfNeeded(
   const reason = formatAutoRejectionReason(evaluation.failures);
   const now = new Date();
 
-  await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx: any) => {
     await tx.loanApplication.update({
       where: { id: applicationId },
       data: {
@@ -115,6 +115,7 @@ export async function applyAutoRejectionIfNeeded(
         reason,
         autoRejectedAt: now,
         statusUpdatedAt: now,
+        version: { increment: 1 },
       },
     });
 

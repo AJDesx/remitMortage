@@ -69,7 +69,7 @@ export async function mergeApplicants(
   const result = await prisma.$transaction(async (tx: any) => {
     const loanRes = await tx.loanApplication.updateMany({
       where: { applicantId: duplicateApplicantId },
-      data: { applicantId: primaryApplicantId },
+      data: { applicantId: primaryApplicantId, version: { increment: 1 } },
     });
 
     const vrRes = await tx.verificationResult.updateMany({

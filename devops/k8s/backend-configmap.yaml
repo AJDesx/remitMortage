@@ -12,3 +12,5 @@ data:
   OTEL_SERVICE_NAME: "remitmortgage-backend"
   OTEL_TRACES_SAMPLER_RATIO: "1.0"
   LOG_LEVEL: "info"
+  CLAMAV_HOST: "clamav"
+  CLAMAV_PORT: "3310"
