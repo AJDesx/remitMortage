@@ -13,6 +13,44 @@ pub struct PendingUpgradeRecord {
     pub execute_after: u32,
 }
 
+/// A pending, timelocked change to an asset class's collateral haircut.
+/// The asset class itself is the storage key (`DataKey::PendingHaircutChange`),
+/// not stored redundantly here.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingHaircutChange {
+    /// The haircut value queued to take effect.
+    pub haircut_bps: u32,
+    /// The ledger sequence after which this change may execute.
+    pub execute_after: u32,
+}
+
+/// Lifecycle state of the pool's orderly wind-down process.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+#[repr(u32)]
+pub enum WindDownStatus {
+    /// Normal operation: deposits, loan requests and withdrawals all work
+    /// exactly as they always have.
+    Active = 0,
+    /// New deposits and loan requests are rejected; repayments continue;
+    /// investors withdraw via `withdraw_during_wind_down`, pro rata by
+    /// tranche seniority, as liquidity returns.
+    WindingDown = 1,
+    /// All loans have been resolved (`ActiveLoanCommitments == 0`) and
+    /// `finalize_wind_down` has been called. Withdrawals continue to be
+    /// available until every investor has been paid out.
+    Finalized = 2,
+}
+
+/// A pending, timelocked proposal to start wind-down.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingWindDown {
+    /// The ledger sequence after which wind-down may actually start.
+    pub execute_after: u32,
+}
+
 /// Tranche types for risk stratification of investor deposits.
 ///
 /// Senior tranche offers a lower, fixed yield rate but is protected from losses.
@@ -504,6 +542,21 @@ pub enum DataKey {
     LoanAssumption(BytesN<32>),
     /// Locked payoff quote for a loan, keyed by loan ID.
     PayoffQuote(BytesN<32>),
+    /// Configured collateral haircut (bps) for an asset class. Absent means
+    /// no haircut (0 bps) — face value counts in full toward ratio checks.
+    AssetClassHaircut(Symbol),
+    /// Pending timelocked haircut change for an asset class.
+    PendingHaircutChange(Symbol),
+    /// Ledgers that must elapse between proposing and executing a haircut
+    /// change. `0` disables the timelock (changes apply immediately).
+    HaircutChangeDelay,
+    /// The pool's wind-down lifecycle state. Absent means `Active`.
+    WindDownStatus,
+    /// Pending timelocked wind-down start.
+    PendingWindDown,
+    /// Ledgers that must elapse between proposing and executing wind-down.
+    /// `0` disables the timelock (wind-down starts immediately).
+    WindDownDelay,
 }
 
 /// Storage keys for newer pool features.
@@ -589,12 +642,19 @@ pub struct LoanAssumptionRequest {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoanCollateralRecord {
-    /// Initial locked collateral amount.
+    /// Initial locked collateral amount, at face value.
     pub initial_collateral: i128,
-    /// Total collateral amount released to borrower so far.
+    /// Total collateral amount released to borrower so far, at face value.
     pub released_collateral: i128,
-    /// Minimum required collateralization ratio in basis points (e.g. 3000 = 30%).
+    /// Minimum required collateralization ratio in basis points (e.g. 3000 = 30%),
+    /// checked against the haircut-adjusted (not face) value of the remaining
+    /// collateral.
     pub min_collateral_ratio_bps: u32,
+    /// The collateral's asset class, used to look up its configured haircut
+    /// (`DataKey::AssetClassHaircut`) when computing collateralization ratios.
+    /// Does not affect the face-value amounts above — only how much of that
+    /// face value counts toward meeting `min_collateral_ratio_bps`.
+    pub asset_class: Symbol,
 }
 
 /// A locked payoff quote: the exact amount that settles the loan if paid

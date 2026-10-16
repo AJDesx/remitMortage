@@ -51,6 +51,12 @@ fn premium_for(amount: i128) -> i128 {
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 
+/// Upper bound on a collateral asset class's haircut. A haircut above this
+/// would mean a loan class can never be credited with meaningful collateral
+/// at all, which is almost certainly a misconfiguration rather than an
+/// intentional policy.
+const MAX_HAIRCUT_BPS: u32 = 7_000; // 70%
+
 // Ledger durations used for repayment scheduling
 const LEDGERS_PER_MONTH: u32 = 518_400; // ~30 days
 #[cfg(not(test))]
@@ -3201,12 +3207,16 @@ impl LendingPoolContract {
         Ok(())
     }
 
-    /// Explicitly configure initial collateral amount and minimum collateralization ratio (bps) for a loan.
+    /// Explicitly configure initial collateral amount, minimum collateralization
+    /// ratio (bps), and asset class for a loan. The asset class determines which
+    /// configured haircut (`get_asset_class_haircut`) applies when this
+    /// collateral's ratio is computed — see `compute_collateral_release`.
     pub fn set_loan_collateral(
         env: Env,
         loan_id: BytesN<32>,
         initial_collateral: i128,
         min_ratio_bps: u32,
+        asset_class: Symbol,
     ) -> Result<(), PoolError> {
         Self::check_not_paused(&env)?;
         if initial_collateral <= 0 {
@@ -3222,6 +3232,7 @@ impl LendingPoolContract {
             initial_collateral,
             released_collateral: released,
             min_collateral_ratio_bps: min_ratio_bps,
+            asset_class,
         };
         env.storage()
             .persistent()
@@ -3254,8 +3265,21 @@ impl LendingPoolContract {
                 initial_collateral,
                 released_collateral: 0,
                 min_collateral_ratio_bps: 3_000, // 30% default minimum collateral ratio
+                // No asset class was ever declared for this loan — "unclassified"
+                // carries a 0 bps haircut unless an admin deliberately configures
+                // one for that exact class, so defaulted records behave exactly
+                // as they did before haircuts existed.
+                asset_class: Symbol::new(env, "unclassified"),
             }
         }
+    }
+
+    /// Configured haircut (bps) for `asset_class`, or 0 if none has been set.
+    fn read_asset_class_haircut(env: &Env, asset_class: &Symbol) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::AssetClassHaircut(asset_class.clone()))
+            .unwrap_or(0)
     }
 
     /// Calculate releasable collateral amount, remaining collateral, and current collateralization ratio in bps.
@@ -3267,11 +3291,19 @@ impl LendingPoolContract {
         let collateral = Self::get_or_default_loan_collateral(&env, &loan_id, &loan);
 
         let (releasable, remaining_collateral, current_ratio_bps) =
-            Self::compute_collateral_release(&loan, &collateral);
+            Self::compute_collateral_release(&env, &loan, &collateral);
         Ok((releasable, remaining_collateral, current_ratio_bps))
     }
 
+    /// Returns `(releasable, remaining_collateral, current_ratio_bps)`.
+    ///
+    /// `releasable` and `remaining_collateral` are face-value token amounts —
+    /// the haircut never changes how many tokens are actually locked or
+    /// released. `current_ratio_bps` is computed against the haircut-adjusted
+    /// value of `remaining_collateral`, so a higher-haircut asset class
+    /// produces a lower ratio for the exact same face-value collateral.
     fn compute_collateral_release(
+        env: &Env,
         loan: &LoanRecord,
         collateral: &LoanCollateralRecord,
     ) -> (i128, i128, u32) {
@@ -3291,8 +3323,12 @@ impl LendingPoolContract {
             .saturating_sub(collateral.released_collateral + releasable);
         let remaining_principal = loan.principal.saturating_sub(principal_paid);
 
+        let haircut_bps = Self::read_asset_class_haircut(env, &collateral.asset_class);
+        let effective_collateral =
+            (remaining_collateral * (10_000i128 - haircut_bps as i128)) / 10_000i128;
+
         let current_ratio_bps = if remaining_principal > 0 {
-            ((remaining_collateral * 10_000) / remaining_principal) as u32
+            ((effective_collateral * 10_000) / remaining_principal) as u32
         } else {
             10_000u32
         };
@@ -3336,7 +3372,7 @@ impl LendingPoolContract {
         let mut collateral = Self::get_or_default_loan_collateral(env, loan_id, &loan);
 
         let (releasable, remaining_collateral, ratio_bps) =
-            Self::compute_collateral_release(&loan, &collateral);
+            Self::compute_collateral_release(env, &loan, &collateral);
 
         if releasable <= 0 {
             return Err(PoolError::NoCollateralToRelease);
@@ -3413,7 +3449,7 @@ impl LendingPoolContract {
             .set(&DataKey::LoanCollateral(loan_id.clone()), &collateral);
 
         let (_, remaining_collateral, ratio_bps) =
-            Self::compute_collateral_release(&loan, &collateral);
+            Self::compute_collateral_release(&env, &loan, &collateral);
 
         env.events().publish(
             (Symbol::new(&env, "collateral_topped_up"), loan_id),
@@ -3421,6 +3457,125 @@ impl LendingPoolContract {
         );
 
         Ok(ratio_bps)
+    }
+
+    // ── Collateral Haircut Schedule ──────────────────────────────────────
+
+    /// Set the number of ledgers that must elapse between proposing and
+    /// executing a haircut change for any asset class. Pass `0` to disable
+    /// the timelock (changes apply immediately). Admin-only.
+    pub fn set_haircut_change_delay(env: Env, delay_ledgers: u32) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::HaircutChangeDelay, &delay_ledgers);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Propose or execute a haircut change for `asset_class`, in bps.
+    ///
+    /// Mirrors `upgrade`'s behaviour exactly, keyed per asset class instead
+    /// of globally:
+    /// - No delay: immediate change.
+    /// - Delay > 0 and no pending change for this class: stores the
+    ///   proposal, emits an event.
+    /// - Delay > 0 and pending but not yet due: returns
+    ///   `HaircutChangeTimelockActive`.
+    /// - Delay > 0 and pending is due: applies the change.
+    ///
+    /// `haircut_bps` must be within `[0, MAX_HAIRCUT_BPS]`. Admin-only.
+    pub fn set_asset_class_haircut(
+        env: Env,
+        asset_class: Symbol,
+        haircut_bps: u32,
+    ) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        if haircut_bps > MAX_HAIRCUT_BPS {
+            return Err(PoolError::InvalidHaircutBps);
+        }
+
+        let delay: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::HaircutChangeDelay)
+            .unwrap_or(0u32);
+        let current_ledger = env.ledger().sequence();
+
+        if delay == 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::AssetClassHaircut(asset_class.clone()), &haircut_bps);
+            env.events().publish(
+                (symbol_short!("hcut_set"), asset_class),
+                (haircut_bps,),
+            );
+        } else {
+            let maybe_pending: Option<PendingHaircutChange> = env
+                .storage()
+                .instance()
+                .get(&DataKey::PendingHaircutChange(asset_class.clone()));
+
+            match maybe_pending {
+                None => {
+                    let proposal = PendingHaircutChange {
+                        haircut_bps,
+                        execute_after: current_ledger + delay,
+                    };
+                    env.storage().instance().set(
+                        &DataKey::PendingHaircutChange(asset_class.clone()),
+                        &proposal,
+                    );
+                    env.events().publish(
+                        (symbol_short!("hcut_prop"), asset_class),
+                        (haircut_bps, proposal.execute_after),
+                    );
+                }
+                Some(pending) => {
+                    if current_ledger < pending.execute_after {
+                        return Err(PoolError::HaircutChangeTimelockActive);
+                    }
+                    env.storage()
+                        .instance()
+                        .remove(&DataKey::PendingHaircutChange(asset_class.clone()));
+                    env.storage().instance().set(
+                        &DataKey::AssetClassHaircut(asset_class.clone()),
+                        &pending.haircut_bps,
+                    );
+                    env.events().publish(
+                        (symbol_short!("hcut_set"), asset_class),
+                        (pending.haircut_bps,),
+                    );
+                }
+            }
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Returns the live configured haircut (bps) for `asset_class`, or 0 if
+    /// none has been set.
+    pub fn get_asset_class_haircut(env: Env, asset_class: Symbol) -> u32 {
+        Self::read_asset_class_haircut(&env, &asset_class)
+    }
+
+    /// Returns the pending haircut change for `asset_class`, if any.
+    pub fn get_pending_haircut_change(
+        env: Env,
+        asset_class: Symbol,
+    ) -> Option<PendingHaircutChange> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PendingHaircutChange(asset_class))
     }
 
     /// Trigger an on-chain liquidation for a defaulted loan.
@@ -11723,7 +11878,7 @@ mod test {
         let contractor = Address::generate(&env);
         client.add_contractor(&contractor);
         client.disburse(&loan_id, &contractor, &principal);
-        client.set_loan_collateral(&loan_id, &initial_collateral, &3_000u32); // 30% min ratio
+        client.set_loan_collateral(&loan_id, &initial_collateral, &3_000u32, &Symbol::new(&env, "real_estate")); // 30% min ratio
 
         // Before any repayment, releasable collateral is 0
         let (releasable, remaining_c, ratio) = client.get_releasable_collateral(&loan_id);
@@ -11830,7 +11985,7 @@ mod test {
         client.disburse(&loan_id, &contractor, &principal);
 
         // Set a strict 60% minimum collateral ratio (6000 bps)
-        client.set_loan_collateral(&loan_id, &30_000_0000000i128, &6_000u32);
+        client.set_loan_collateral(&loan_id, &30_000_0000000i128, &6_000u32, &Symbol::new(&env, "real_estate"));
 
         let sac = token::StellarAssetClient::new(&env, &token_address);
         sac.mint(&borrower, &50_000_0000000i128);
@@ -11858,7 +12013,7 @@ mod test {
         client.request_loan(&borrower, &loan_id, &70_000_0000000i128);
         client.approve_loan(&loan_id);
         // 10k against 70k is ~14.28%, below the 30% minimum.
-        client.set_loan_collateral(&loan_id, &10_000_0000000i128, &3_000u32);
+        client.set_loan_collateral(&loan_id, &10_000_0000000i128, &3_000u32, &Symbol::new(&env, "real_estate"));
         let (_, _, ratio_before) = client.get_releasable_collateral(&loan_id);
         assert_eq!(ratio_before, 1_428u32);
 
@@ -11898,7 +12053,7 @@ mod test {
         client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
         client.request_loan(&borrower, &loan_id, &70_000_0000000i128);
         client.approve_loan(&loan_id);
-        client.set_loan_collateral(&loan_id, &30_000_0000000i128, &3_000u32);
+        client.set_loan_collateral(&loan_id, &30_000_0000000i128, &3_000u32, &Symbol::new(&env, "real_estate"));
 
         StellarAssetClient::new(&env, &token_address).mint(&borrower, &7_000_0000000i128);
         let ratio = client.top_up_collateral(&loan_id, &borrower, &7_000_0000000i128);
@@ -11920,6 +12075,87 @@ mod test {
                 .initial_collateral,
             37_000_0000000i128
         );
+    }
+
+    // ── Collateral Haircut Schedule by Asset Class ───────────────────────
+
+    #[test]
+    fn test_identical_face_value_counts_for_less_in_a_higher_haircut_class() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+
+        let stable_class = Symbol::new(&env, "stablecoin");
+        let volatile_class = Symbol::new(&env, "volatile_token");
+        client.set_asset_class_haircut(&stable_class, &0u32); // no haircut
+        client.set_asset_class_haircut(&volatile_class, &5_000u32); // 50% haircut
+
+        client.deposit(&investor, &200_000_0000000i128, &Tranche::Senior);
+
+        let principal = 70_000_0000000i128;
+        let same_face_value = 30_000_0000000i128;
+
+        let stable_borrower = Address::generate(&env);
+        let stable_loan = BytesN::from_array(&env, &[2u8; 32]);
+        client.request_loan(&stable_borrower, &stable_loan, &principal);
+        client.approve_loan(&stable_loan);
+        client.set_loan_collateral(&stable_loan, &same_face_value, &3_000u32, &stable_class);
+
+        let volatile_borrower = Address::generate(&env);
+        let volatile_loan = BytesN::from_array(&env, &[3u8; 32]);
+        client.request_loan(&volatile_borrower, &volatile_loan, &principal);
+        client.approve_loan(&volatile_loan);
+        client.set_loan_collateral(&volatile_loan, &same_face_value, &3_000u32, &volatile_class);
+
+        let (_, stable_remaining, stable_ratio) = client.get_releasable_collateral(&stable_loan);
+        let (_, volatile_remaining, volatile_ratio) =
+            client.get_releasable_collateral(&volatile_loan);
+
+        // Same face-value collateral (30k) in both cases.
+        assert_eq!(stable_remaining, same_face_value);
+        assert_eq!(volatile_remaining, same_face_value);
+
+        // Unhaircut: 30k / 70k ≈ 42.85%.
+        assert_eq!(stable_ratio, 4_285u32);
+        // 50% haircut: only 15k of the 30k counts -> 15k / 70k ≈ 21.42%.
+        assert_eq!(volatile_ratio, 2_142u32);
+        assert!(volatile_ratio < stable_ratio);
+    }
+
+    #[test]
+    fn test_haircut_change_requires_timelock_when_delay_configured() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, _investor, _treasury, _token_address, client) = setup_pool(&env);
+        let asset_class = Symbol::new(&env, "volatile_token");
+
+        client.set_haircut_change_delay(&50u32);
+        client.set_asset_class_haircut(&asset_class, &4_000u32);
+
+        // Still 0 — the change is only proposed, not yet applied.
+        assert_eq!(client.get_asset_class_haircut(&asset_class), 0u32);
+        let pending = client.get_pending_haircut_change(&asset_class).unwrap();
+        assert_eq!(pending.haircut_bps, 4_000u32);
+
+        // Too early.
+        let res = client.try_set_asset_class_haircut(&asset_class, &4_000u32);
+        assert_eq!(res, Err(Ok(PoolError::HaircutChangeTimelockActive)));
+
+        env.ledger().with_mut(|li| li.sequence_number += 50);
+        client.set_asset_class_haircut(&asset_class, &4_000u32);
+        assert_eq!(client.get_asset_class_haircut(&asset_class), 4_000u32);
+        assert!(client.get_pending_haircut_change(&asset_class).is_none());
+    }
+
+    #[test]
+    fn test_haircut_bps_above_bound_is_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, _investor, _treasury, _token_address, client) = setup_pool(&env);
+        let asset_class = Symbol::new(&env, "volatile_token");
+
+        let res = client.try_set_asset_class_haircut(&asset_class, &(MAX_HAIRCUT_BPS + 1));
+        assert_eq!(res, Err(Ok(PoolError::InvalidHaircutBps)));
     }
 
     #[test]
