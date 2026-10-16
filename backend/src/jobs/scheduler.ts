@@ -24,6 +24,7 @@ import { applyDueServicingTransfers } from "../services/loanServicing.js";
 import { prisma } from "../services/db.js";
 import { createPrismaSlowQueryStore } from "../services/slowQueryLog.js";
 import { runDataQualityAuditJob } from "./dataQualityAudit.js";
+import { runAuditChainVerificationJob } from "./auditChainVerification.js";
 
 let schedulerTask: ReturnType<typeof cron.schedule> | null = null;
 let kycExpiryTask: ReturnType<typeof cron.schedule> | null = null;
@@ -44,6 +45,7 @@ let tableBloatMonitorTask: ReturnType<typeof cron.schedule> | null = null;
 let queryKillerTask: ReturnType<typeof cron.schedule> | null = null;
 let fourEyesApprovalExpiryTask: ReturnType<typeof cron.schedule> | null = null;
 let dataQualityAuditTask: ReturnType<typeof cron.schedule> | null = null;
+let auditChainVerificationTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -191,6 +193,16 @@ export function startScheduler() {
     }
   }, { timezone: "UTC" });
 
+  // Every 6 hours: verify the tamper-evident audit-log hash chain (issue #861)
+  const auditChainSchedule = process.env.AUDIT_CHAIN_VERIFY_CRON_SCHEDULE || "0 */6 * * *";
+  auditChainVerificationTask = cron.schedule(auditChainSchedule, async () => {
+    try {
+      await runAuditChainVerificationJob();
+    } catch (error) {
+      logger.error("[Scheduler] Audit chain verification job failed", { error });
+    }
+  }, { timezone: "UTC" });
+
   // Start the materialized view refresh scheduler (every 5 minutes by default)
   startAnalyticsRefreshScheduler();
 
@@ -267,6 +279,10 @@ export function stopScheduler() {
   if (fourEyesApprovalExpiryTask) {
     fourEyesApprovalExpiryTask.stop();
     fourEyesApprovalExpiryTask = null;
+  }
+  if (auditChainVerificationTask) {
+    auditChainVerificationTask.stop();
+    auditChainVerificationTask = null;
   }
   if (dataQualityAuditTask) {
     dataQualityAuditTask.stop();
