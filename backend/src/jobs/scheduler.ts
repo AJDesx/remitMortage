@@ -23,6 +23,7 @@ import { runFourEyesApprovalExpiryJob } from "./fourEyesApprovalExpiry.js";
 import { applyDueServicingTransfers } from "../services/loanServicing.js";
 import { prisma } from "../services/db.js";
 import { createPrismaSlowQueryStore } from "../services/slowQueryLog.js";
+import { runDataQualityAuditJob } from "./dataQualityAudit.js";
 
 let schedulerTask: ReturnType<typeof cron.schedule> | null = null;
 let kycExpiryTask: ReturnType<typeof cron.schedule> | null = null;
@@ -42,6 +43,7 @@ let servicingTransferTask: ReturnType<typeof cron.schedule> | null = null;
 let tableBloatMonitorTask: ReturnType<typeof cron.schedule> | null = null;
 let queryKillerTask: ReturnType<typeof cron.schedule> | null = null;
 let fourEyesApprovalExpiryTask: ReturnType<typeof cron.schedule> | null = null;
+let dataQualityAuditTask: ReturnType<typeof cron.schedule> | null = null;
 
 export function startScheduler() {
   if (schedulerTask) {
@@ -50,6 +52,16 @@ export function startScheduler() {
   }
 
   startPartitionManager();
+
+  // Nightly read-only scan; clean and failing summaries are retained in AuditLog.
+  const dataQualitySchedule = process.env.DATA_QUALITY_AUDIT_CRON_SCHEDULE || "0 6 * * *";
+  dataQualityAuditTask = cron.schedule(dataQualitySchedule, async () => {
+    try {
+      await runDataQualityAuditJob();
+    } catch (error) {
+      logger.error("[Scheduler] Data quality audit failed", { error });
+    }
+  }, { timezone: "UTC" });
 
   // Daily at midnight UTC: repayment audit
   schedulerTask = cron.schedule("0 0 * * *", async () => {
@@ -255,6 +267,10 @@ export function stopScheduler() {
   if (fourEyesApprovalExpiryTask) {
     fourEyesApprovalExpiryTask.stop();
     fourEyesApprovalExpiryTask = null;
+  }
+  if (dataQualityAuditTask) {
+    dataQualityAuditTask.stop();
+    dataQualityAuditTask = null;
   }
   stopAnalyticsRefreshScheduler();
   console.log("[Scheduler] Stopped.");
