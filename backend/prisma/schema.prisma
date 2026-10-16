@@ -344,6 +344,14 @@ model LoanApplication {
   status             LoanStatus @default(Pending)
   createdAt          DateTime   @default(now())
 
+  // Optimistic concurrency token (issue #846). Incremented on every update
+  // written through the loan update API (services/loanStore.ts). A client
+  // sends back the version it read as `expectedVersion`; when a concurrent
+  // writer has bumped it in the meantime the update is rejected with a 409
+  // carrying the current record instead of silently overwriting the other
+  // reviewer's decision.
+  version            Int        @default(1)
+
   // Repayment tracking
   dueDate            DateTime?
   missedPayments     Int              @default(0)

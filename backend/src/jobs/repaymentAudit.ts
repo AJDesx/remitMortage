@@ -86,7 +86,7 @@ async function handleEnterGracePeriod(
 
   await prisma.loanApplication.update({
     where: { id: loanId },
-    data: { gracePeriodEndsAt },
+    data: { gracePeriodEndsAt, version: { increment: 1 } },
   });
 
   const applicant = await prisma.applicant.findUnique({ where: { id: applicantId } });
@@ -124,7 +124,13 @@ async function handleMissedPayment(
     // Transition to default
     await prisma.loanApplication.update({
       where: { id: loanId },
-      data: { missedPayments: newMissedPayments, lateFeeBalance: newLateFee, gracePeriodEndsAt: null, status: "DEFAULTED" },
+      data: {
+        missedPayments: newMissedPayments,
+        lateFeeBalance: newLateFee,
+        gracePeriodEndsAt: null,
+        status: "DEFAULTED",
+        version: { increment: 1 },
+      },
     });
 
     const applicant = await prisma.applicant.findUnique({ where: { id: applicantId } });
@@ -151,6 +157,7 @@ async function handleMissedPayment(
         lateFeeBalance: newLateFee,
         gracePeriodEndsAt: null,
         dueDate: nextDueDate,
+        version: { increment: 1 },
       },
     });
 
@@ -181,7 +188,7 @@ async function handleDefault(
   applicantId: string,
   guarantorAddress: string | null
 ) {
-  await prisma.loanApplication.update({ where: { id: loanId }, data: { status: "DEFAULTED", gracePeriodEndsAt: null } });
+  await prisma.loanApplication.update({ where: { id: loanId }, data: { status: "DEFAULTED", gracePeriodEndsAt: null, version: { increment: 1 } } });
   
   const applicant = await prisma.applicant.findUnique({ where: { id: applicantId } });
   if (applicant) {

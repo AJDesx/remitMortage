@@ -1,0 +1,11 @@
+-- Issue #846: optimistic locking for loan application records.
+--
+-- Adds the concurrency token the update API guards on. `NOT NULL DEFAULT 1`
+-- backfills every existing row as version 1 (Postgres 11+ fills the column
+-- in place — metadata only, no table rewrite), so no data backfill step is
+-- needed and old readers see the same rows they saw before.
+--
+-- The guarded update path filters on the primary key first
+-- (`WHERE "id" = ... AND "version" = ...`), so it is served by the existing
+-- pkey index — no extra index is needed.
+ALTER TABLE "LoanApplication" ADD COLUMN "version" INTEGER NOT NULL DEFAULT 1;

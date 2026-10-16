@@ -34,6 +34,16 @@ import {
   reviewFlaggedDocument,
 } from "../services/kycDocumentForensics.js";
 import { loadConfig } from "../config.js";
+import { requiresFourEyesApproval } from "../services/fourEyesPolicy.js";
+import {
+  createApprovalRequest,
+  getApprovalRequest,
+  listPendingApprovalRequests,
+  markExecuted,
+  approveRequest,
+  rejectRequest,
+  FourEyesError,
+} from "../services/fourEyesApproval.js";
 import {
   getModelConfig,
   getShadowEvaluations,
@@ -140,9 +150,23 @@ adminRouter.post("/loans/bulk-review", requireAdmin, async (req: AuthenticatedRe
     applicationId: typeof item?.applicationId === "string" ? item.applicationId : item?.id,
     decision: item?.decision,
     reason: item?.reason,
+    // Optimistic lock (issue #846): optional per item so batched callers can
+    // stay backward compatible, strictly validated when supplied.
+    version: item?.version,
   }));
   if (items.some((item: any) => !item.applicationId || !["approve", "reject"].includes(item.decision))) {
     return res.status(400).json({ error: "invalid_request", message: "Each review requires an applicationId and an approve or reject decision" });
+  }
+  if (
+    items.some(
+      (item: any) =>
+        item.version !== undefined &&
+        (typeof item.version !== "number" || !Number.isInteger(item.version) || item.version < 1)
+    )
+  ) {
+    return res
+      .status(400)
+      .json({ error: "invalid_request", message: "Each review's version must be an integer >= 1 when provided" });
   }
 
   const reviewerAddress = req.user?.walletAddress;
@@ -152,16 +176,33 @@ adminRouter.post("/loans/bulk-review", requireAdmin, async (req: AuthenticatedRe
 
   try {
     const review = await bulkReviewApplications(
-      items as Array<{ applicationId: string; decision: BulkReviewDecision; reason?: string }>,
+      items as Array<{
+        applicationId: string;
+        decision: BulkReviewDecision;
+        reason?: string;
+        version?: number;
+      }>,
       reviewerAddress,
       req.ip,
     );
-    return res.status(200).json({
+    const payload = {
       processed: review.results.length,
       failed: review.failures.length,
       results: review.results,
       failures: review.failures,
-    });
+    };
+    // Optimistic lock (issue #846): any stale decision turns the batch into a
+    // 409 so it can't be mistaken for a successful review — each conflicted
+    // failure carries the current state needed to re-read and retry.
+    const conflicts = review.failures.filter((f) => f.error === "version_conflict");
+    if (conflicts.length > 0) {
+      return res.status(409).json({
+        error: "version_conflict",
+        message: `${conflicts.length} review(s) targeted a stale version and were rejected`,
+        ...payload,
+      });
+    }
+    return res.status(200).json(payload);
   } catch (error) {
     logger.error("Bulk loan review error", { error });
     return res.status(500).json({ error: "bulk_review_failed" });
