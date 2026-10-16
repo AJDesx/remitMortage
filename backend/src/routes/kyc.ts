@@ -266,6 +266,7 @@ kycRouter.post(
       res.status(201).json({
         documentId: record.documentId,
         uploadedAt: record.uploadedAt,
+        scanStatus: record.scanStatus,
         ocr: ocrResponse,
       });
     } catch (error) {
