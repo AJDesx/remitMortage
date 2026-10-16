@@ -10,6 +10,7 @@ import {
   type LoanSnapshot,
 } from "./loanHistory.js";
 import { autoAssignApplicationReviewer } from "./assignmentQueue.js";
+import { priceNewOffer } from "./rateSheet.js";
 
 // lightweight id generator to avoid adding dependencies
 function makeId() {
@@ -33,10 +34,18 @@ export interface LoanApplication {
   id: string;
   borrowerAddress: string;
   amount: string;
+  loanType?: string;
   status: LoanStatus;
   reason?: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Optimistic-locking token (issue #846). Incremented on every update
+   * written through this module. Send the value you last read back as
+   * `expectedVersion` so a concurrent reviewer's decision surfaces as a
+   * {@link StaleVersionError} (HTTP 409) instead of being overwritten.
+   */
+  version: number;
   /** Present only when a guarantor was attached to this loan. */
   guarantorAddress?: string;
   /** Present only when a guarantor was attached to this loan. */
@@ -46,6 +55,45 @@ export interface LoanApplication {
   /** Current servicer of record; absent while the originator services the loan. */
   servicer?: string;
   servicerContact?: string;
+  /** Rate this offer was priced at, in basis points. */
+  interestRateBps?: number;
+  /** Rate sheet version that priced this offer; absent for pre-versioning loans. */
+  rateSheetVersionId?: string;
+}
+
+/**
+ * Thrown when an update guarded by `expectedVersion` races another writer
+ * (issue #846). Carries the record as it exists now so the route can return
+ * 409 with the current state and the client can re-read, re-apply and retry.
+ */
+export class StaleVersionError extends Error {
+  readonly code = "version_conflict" as const;
+  /** Lets the global error handler fall back to 409 if a route forgets to catch. */
+  readonly statusCode = 409;
+  /** The record as it stands after the concurrent write landed. */
+  readonly current: LoanApplication;
+  readonly expectedVersion: number;
+
+  constructor(current: LoanApplication, expectedVersion: number) {
+    super(
+      `Loan application ${current.id} was updated concurrently: expected version ` +
+        `${expectedVersion}, current version ${current.version}`
+    );
+    this.name = "StaleVersionError";
+    this.current = current;
+    this.expectedVersion = expectedVersion;
+  }
+}
+
+/** Options for {@link updateApplication}. */
+export interface UpdateApplicationOptions {
+  /**
+   * Optimistic-lock guard (issue #846). When supplied, the update only
+   * succeeds if the record still has this exact version; otherwise a
+   * {@link StaleVersionError} carrying the current record is thrown and no
+   * write happens.
+   */
+  expectedVersion?: number;
 }
 
 /** Options for attaching a guarantor at application creation time. */
@@ -71,6 +119,11 @@ function mapLoanApplication(record: any): LoanApplication {
     manualReviewReason: record.manualReviewReason ?? undefined,
     servicer: record.servicer ?? undefined,
     servicerContact: record.servicerContact ?? undefined,
+    interestRateBps: record.interestRateBps ?? undefined,
+    rateSheetVersionId: record.rateSheetVersionId ?? undefined,
+    // Rows migrated before issue #846 existed default to version 1, matching
+    // the column default; mocked/legacy records without the field do too.
+    version: typeof record.version === "number" ? record.version : 1,
     createdAt: record.createdAt.toISOString(),
     // updatedAt is not on the schema model; fall back to createdAt
     updatedAt: (record.updatedAt ?? record.createdAt).toISOString(),
@@ -113,12 +166,19 @@ export async function createApplication(
   const applicant = await findOrCreateApplicant(borrowerAddress);
   const id = makeId();
 
+  // Issue #746: price from the rate sheet in effect right now and record which
+  // version that was, so the offer can be traced back to its exact rates.
+  const pricing = await priceNewOffer(applicant.creditScore, new Date());
+
   const record = await prisma.loanApplication.create({
     data: {
       id,
       applicantId: applicant.id,
       principal: Number(amount),
       status: "Pending",
+      ...(pricing
+        ? { interestRateBps: pricing.interestRateBps, rateSheetVersionId: pricing.rateSheetVersionId }
+        : {}),
       ...(guarantor
         ? {
             guarantorAddress: guarantor.address,
@@ -188,12 +248,23 @@ export async function listApplications() {
   return records.map(mapLoanApplication);
 }
 
-export async function updateApplication(id: string, patch: Partial<LoanApplication>) {
+export async function updateApplication(
+  id: string,
+  patch: Partial<LoanApplication>,
+  options: UpdateApplicationOptions = {}
+) {
+  const { expectedVersion } = options;
   const existing = await prisma.loanApplication.findFirst({
     where: { id, deletedAt: null },
     include: { applicant: true },
   });
   if (!existing) return null;
+
+  // Optimistic lock (issue #846): fail fast — before any write — when the
+  // caller's snapshot is already behind a concurrent reviewer's decision.
+  if (expectedVersion !== undefined && existing.version !== expectedVersion) {
+    throw new StaleVersionError(mapLoanApplication(existing), expectedVersion);
+  }
 
   const before: LoanSnapshot = {
     borrowerAddress: existing.applicant.stellarAddress,
@@ -215,6 +286,7 @@ export async function updateApplication(id: string, patch: Partial<LoanApplicati
     reason?: string | null;
     lastActivityAt?: Date;
     draftStaleNotifiedAt?: null;
+    version?: { increment: number };
   } = {};
 
   if (patch.amount !== undefined) updateData.principal = Number(patch.amount);
@@ -224,22 +296,44 @@ export async function updateApplication(id: string, patch: Partial<LoanApplicati
   // Any edit to a still-Draft application counts as activity: reset the
   // inactivity clock and clear a pending stale notice, taking it out of
   // scope for the stale draft cleanup job.
+  const hasFieldChanges = Object.keys(updateData).length > 0;
   const resultingStatus = patch.status ?? existing.status;
-  if (Object.keys(updateData).length && resultingStatus === "Draft") {
+  if (hasFieldChanges && resultingStatus === "Draft") {
     updateData.lastActivityAt = new Date();
     updateData.draftStaleNotifiedAt = null;
   }
 
-  const record = Object.keys(updateData).length
-    ? await prisma.loanApplication.update({
-        where: { id },
-        data: updateData,
-        include: { applicant: true },
-      })
-    : await prisma.loanApplication.findFirst({
+  // Every write through this API bumps the optimistic-lock token, so the
+  // next stale update is detectable (issue #846).
+  updateData.version = { increment: 1 };
+
+  let record: any;
+  try {
+    record = await prisma.loanApplication.update({
+      // With `expectedVersion` the guard is re-checked atomically in the
+      // UPDATE's WHERE clause, closing the read-then-write race window.
+      where: {
+        id,
+        ...(expectedVersion !== undefined ? { version: expectedVersion } : {}),
+      },
+      data: updateData,
+      include: { applicant: true },
+    });
+  } catch (error) {
+    // Prisma reports "record not found" (P2025) when the guarded WHERE no
+    // longer matches — i.e. a concurrent write landed between the read above
+    // and this UPDATE. Translate that into the same conflict payload.
+    if (expectedVersion !== undefined) {
+      const current = await prisma.loanApplication.findFirst({
         where: { id, deletedAt: null },
         include: { applicant: true },
       });
+      if (current && current.version !== expectedVersion) {
+        throw new StaleVersionError(mapLoanApplication(current), expectedVersion);
+      }
+    }
+    throw error;
+  }
 
   if (!record) return null;
 
@@ -262,7 +356,7 @@ export async function resumeDraftApplication(id: string) {
 
   const record = await prisma.loanApplication.update({
     where: { id },
-    data: { lastActivityAt: new Date(), draftStaleNotifiedAt: null },
+    data: { lastActivityAt: new Date(), draftStaleNotifiedAt: null, version: { increment: 1 } },
     include: { applicant: true },
   });
 
@@ -278,7 +372,7 @@ export async function discardDraftApplication(id: string) {
 
   const record = await prisma.loanApplication.update({
     where: { id },
-    data: { deletedAt: new Date() },
+    data: { deletedAt: new Date(), version: { increment: 1 } },
     include: { applicant: true },
   });
 
@@ -291,12 +385,31 @@ export interface BulkReviewItem {
   applicationId: string;
   decision: BulkReviewDecision;
   reason?: string;
+  /**
+   * Optimistic-lock guard (issue #846). When supplied, the decision is only
+   * applied if the record still sits at this version; a mismatch records a
+   * `version_conflict` failure carrying the current state instead of
+   * overwriting the concurrent reviewer's decision.
+   */
+  version?: number;
 }
 
 export interface BulkReviewResult {
   applicationId: string;
   decision: BulkReviewDecision;
   status: LoanStatus;
+  /** Version after the write — send it back as the next `version`. */
+  version: number;
+}
+
+export interface BulkReviewFailure {
+  applicationId: string;
+  /** Short failure code: not_found | invalid_state | ineligible | version_conflict | ... */
+  error: string;
+  /** Present for version_conflict: the record's version right now. */
+  currentVersion?: number;
+  /** Present for version_conflict: the record's current state (HTTP 409 payload). */
+  application?: LoanApplication;
 }
 
 /**
@@ -310,17 +423,24 @@ export async function bulkReviewApplications(
   ipAddress?: string,
 ) {
   const results: BulkReviewResult[] = [];
-  const failures: Array<{ applicationId: string; error: string }> = [];
+  const failures: BulkReviewFailure[] = [];
 
   for (const item of items) {
     try {
-      const result = await prisma.$transaction(async (tx) => {
+      const result = await prisma.$transaction(async (tx: any) => {
         const application = await tx.loanApplication.findFirst({
           where: { id: item.applicationId, deletedAt: null },
           include: { applicant: true },
         });
 
         if (!application) throw new Error("not_found");
+
+        // Optimistic lock (issue #846): reject inside the same transaction
+        // that performs the write, so a stale decision never lands.
+        if (item.version !== undefined && application.version !== item.version) {
+          throw new StaleVersionError(mapLoanApplication(application), item.version);
+        }
+
         if (application.status !== "Pending") throw new Error("invalid_state");
         if (application.principal <= 0 || application.applicant.deletedAt !== null) {
           throw new Error("ineligible");
@@ -331,8 +451,11 @@ export async function bulkReviewApplications(
 
         const status = item.decision === "approve" ? "Approved" : "Rejected";
         const updated = await tx.loanApplication.update({
-          where: { id: item.applicationId },
-          data: { status, statusUpdatedAt: new Date() },
+          where: {
+            id: item.applicationId,
+            ...(item.version !== undefined ? { version: item.version } : {}),
+          },
+          data: { status, statusUpdatedAt: new Date(), version: { increment: 1 } },
           include: { applicant: true },
         });
 
@@ -356,89 +479,42 @@ export async function bulkReviewApplications(
           },
         });
 
-        return { applicationId: updated.id, decision: item.decision, status };
+        return {
+          applicationId: updated.id,
+          decision: item.decision,
+          status,
+          // Version after the write (issue #846) — echoed back so the next
+          // batched decision can chain from it. Falls back to the expected
+          // increment when a mock/legacy record omits the column.
+          version:
+            typeof updated.version === "number"
+              ? updated.version
+              : (application.version ?? 0) + 1,
+        };
       });
       results.push(result);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "review_failed";
-      failures.push({ applicationId: item.applicationId, error: message });
-    }
-  }
-
-  return { results, failures };
-}
-
-export type BulkReviewDecision = "approve" | "reject";
-
-export interface BulkReviewItem {
-  applicationId: string;
-  decision: BulkReviewDecision;
-  reason?: string;
-}
-
-export interface BulkReviewResult {
-  applicationId: string;
-  decision: BulkReviewDecision;
-  status: LoanStatus;
-}
-
-/**
- * Review applications independently while keeping each state change and its
- * compliance audit event in one database transaction. A rejected item does
- * not roll back successful decisions for other applications in the batch.
- */
-export async function bulkReviewApplications(
-  items: BulkReviewItem[],
-  reviewerAddress: string,
-  ipAddress?: string,
-) {
-  const results: BulkReviewResult[] = [];
-  const failures: Array<{ applicationId: string; error: string }> = [];
-
-  for (const item of items) {
-    try {
-      const result = await (prisma.$transaction as any)(async (tx: any) => {
-        const application = await tx.loanApplication.findFirst({
-          where: { id: item.applicationId, deletedAt: null },
-          include: { applicant: true },
+      if (error instanceof StaleVersionError) {
+        failures.push({
+          applicationId: item.applicationId,
+          error: error.code,
+          currentVersion: error.current.version,
+          application: error.current,
         });
-
-        if (!application) throw new Error("not_found");
-        if (application.status !== "Pending") throw new Error("invalid_state");
-        if (application.principal <= 0 || application.applicant.deletedAt !== null) {
-          throw new Error("ineligible");
-        }
-        if (application.applicant.verificationStatus === "INELIGIBLE") {
-          throw new Error("ineligible");
-        }
-
-        const status = item.decision === "approve" ? "Approved" : "Rejected";
-        const updated = await tx.loanApplication.update({
-          where: { id: item.applicationId },
-          data: { status, statusUpdatedAt: new Date() },
-          include: { applicant: true },
+        continue;
+      }
+      // P2025 on the guarded WHERE: a concurrent write landed between this
+      // transaction's read and its UPDATE (issue #846).
+      if (item.version !== undefined && (error as any)?.code === "P2025") {
+        const current = await getApplication(item.applicationId);
+        failures.push({
+          applicationId: item.applicationId,
+          error: "version_conflict",
+          currentVersion: current?.version,
+          application: current ?? undefined,
         });
-
-        await tx.auditLog.create({
-          data: {
-            action: `loan_application.bulk_${item.decision}d`,
-            actorAddress: reviewerAddress,
-            ipAddress,
-            metadata: {
-              applicationId: item.applicationId,
-              previousStatus: application.status,
-              newStatus: status,
-              decision: item.decision,
-              reason: item.reason ?? null,
-              reviewedAt: new Date().toISOString(),
-            },
-          },
-        });
-
-        return { applicationId: updated.id, decision: item.decision, status };
-      });
-      results.push(result as BulkReviewResult);
-    } catch (error) {
+        continue;
+      }
       const message = error instanceof Error ? error.message : "review_failed";
       failures.push({ applicationId: item.applicationId, error: message });
     }

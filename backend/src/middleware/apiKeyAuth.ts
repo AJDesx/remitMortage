@@ -27,9 +27,40 @@ export function requireScopedApiKey(requiredScope: string) {
       // Allow if the key has the required scope or a wildcard scope.
       // E.g. scope checking could be a prefix match or exact match. We'll use exact match or wildcard '*'.
       const hasScope = apiKey.scopes.includes(requiredScope) || apiKey.scopes.includes("*");
-      
+
       if (!hasScope) {
         res.status(403).json({ error: "forbidden", message: "API key lacks required scope for this endpoint" });
+        return;
+      }
+
+      res.locals.apiKey = apiKey;
+      next();
+    } catch (err) {
+      res.status(500).json({ error: "internal_server_error", message: "Error validating API key" });
+    }
+  };
+}
+
+/**
+ * Authenticates any valid, non-revoked API key with no scope requirement —
+ * for endpoints every key holder should reach regardless of what scopes
+ * they were granted, like reading their own usage quota.
+ */
+export function requireAnyApiKey() {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      res.status(401).json({ error: "missing_authorization", message: "Authorization header is required" });
+      return;
+    }
+
+    const token = authHeader.slice(7);
+
+    try {
+      const apiKey = await prisma.apiKey.findUnique({ where: { key: token } });
+
+      if (!apiKey || apiKey.revoked) {
+        res.status(403).json({ error: "forbidden", message: "Invalid or revoked API key" });
         return;
       }
 

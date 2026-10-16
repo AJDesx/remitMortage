@@ -52,4 +52,8 @@ pub enum ValidatorError {
     RotationCooldownActive = 21,
     /// Invalid rotation cooldown configuration.
     InvalidRotationCooldown = 22,
+    /// The proposal's action list exceeds `MAX_ACTIONS_PER_PROPOSAL`.
+    TooManyActions = 23,
+    /// Two actions within the same proposal share the same `action_id`.
+    DuplicateActionId = 24,
 }

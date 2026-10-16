@@ -1,0 +1,818 @@
+{
+  "contract": "lending-pool",
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "Initial baseline"
+    }
+  ],
+  "events": {
+    "accept_pd": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "pending"
+        ]
+      }
+    ],
+    "app_fee_collected": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "loan_id",
+          "application_fee"
+        ]
+      }
+    ],
+    "app_fee_refund": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "borrower",
+          "fee"
+        ]
+      }
+    ],
+    "app_fee_retained": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "treasury_address",
+          "fee"
+        ]
+      }
+    ],
+    "app_fee_set": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "previous_bps",
+          "new_bps"
+        ]
+      }
+    ],
+    "batch_skip": [
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "value",
+        "data": [
+          "\"amt_inval\""
+        ]
+      },
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "value",
+        "data": [
+          "\"not_found\""
+        ]
+      },
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "value",
+        "data": [
+          "\"not_appr\""
+        ]
+      },
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "value",
+        "data": [
+          "\"exc_prnc\""
+        ]
+      },
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "value",
+        "data": [
+          "\"no_liq\""
+        ]
+      },
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "value",
+        "data": [
+          "\"unauth_c\""
+        ]
+      },
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "value",
+        "data": [
+          "\"lim_exc\""
+        ]
+      },
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "value",
+        "data": [
+          "\"fee_high\""
+        ]
+      },
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "value",
+        "data": [
+          "\"fee_amt\""
+        ]
+      }
+    ],
+    "collateral_released": [
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "releasable",
+          "remaining_collateral"
+        ]
+      }
+    ],
+    "collateral_topped_up": [
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "from",
+          "amount",
+          "remaining_collateral",
+          "ratio_bps"
+        ]
+      }
+    ],
+    "debt_xfer": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "from",
+          "to",
+          "tranche",
+          "amount"
+        ]
+      }
+    ],
+    "default": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "borrower",
+          "seized_amount",
+          "net_loss"
+        ]
+      }
+    ],
+    "default_recovered": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "recovered_amount"
+        ]
+      }
+    ],
+    "dep_fees": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "from",
+          "amount",
+          "total_interest"
+        ]
+      }
+    ],
+    "disburse": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "recipient",
+          "amount"
+        ]
+      }
+    ],
+    "emrg_inj": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "proposal_id",
+          "insurance",
+          "amount"
+        ]
+      }
+    ],
+    "escrow_rel_start": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "start_ledger"
+        ]
+      }
+    ],
+    "fee_switch_set": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "previous_bps",
+          "new_bps"
+        ]
+      }
+    ],
+    "fn_pause_set": [
+      {
+        "topicArgs": [
+          "group"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "paused",
+          "admin"
+        ]
+      }
+    ],
+    "halving": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "epoch_fired",
+          "multiplier",
+          "new_last_halving - (epochs_elapsed - i - 1) * interval"
+        ]
+      }
+    ],
+    "hcut_prop": [
+      {
+        "topicArgs": [
+          "asset_class"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "haircut_bps",
+          "execute_after"
+        ]
+      }
+    ],
+    "hcut_set": [
+      {
+        "topicArgs": [
+          "asset_class"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "haircut_bps"
+        ]
+      }
+    ],
+    "insurance_premium": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "insurance_addr",
+          "premium"
+        ]
+      }
+    ],
+    "keeper_reward_set": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "reward_bps",
+          "reward_cap"
+        ]
+      }
+    ],
+    "keeper_rewarded": [
+      {
+        "topicArgs": [
+          "loan_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "keeper",
+          "keeper_reward"
+        ]
+      }
+    ],
+    "loan_approved": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id"
+        ]
+      }
+    ],
+    "loan_cancelled": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "loan_id"
+        ]
+      }
+    ],
+    "loan_defaulted": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "net_loss"
+        ]
+      }
+    ],
+    "loan_ported": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "source_pool"
+        ]
+      }
+    ],
+    "loan_refinanced": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "locked_rate_bps",
+          "locked_duration_months"
+        ]
+      }
+    ],
+    "loan_rejected": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "loan_id"
+        ]
+      }
+    ],
+    "loan_requested": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "loan_id",
+          "principal"
+        ]
+      }
+    ],
+    "maturity_rebate": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "loan_id",
+          "rebate_amount"
+        ]
+      }
+    ],
+    "migrate": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "ver"
+        ]
+      }
+    ],
+    "orig_fee_set": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "previous_bps",
+          "new_bps"
+        ]
+      }
+    ],
+    "pay_quote": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "quoted_amount",
+          "expires_ledger"
+        ]
+      }
+    ],
+    "pay_quote/used": [
+      {
+        "topicArgs": [
+          "\"used\""
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "amount"
+        ]
+      }
+    ],
+    "perm_mode": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "enabled"
+        ]
+      }
+    ],
+    "prepay_closed": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "waived",
+          "prepayment_penalty"
+        ]
+      }
+    ],
+    "prepay_penalty": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "borrower",
+          "penalty"
+        ]
+      }
+    ],
+    "prepay_waiver_set": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "previous",
+          "ledgers"
+        ]
+      }
+    ],
+    "prop_adm": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "admin",
+          "new_admin"
+        ]
+      }
+    ],
+    "protocol_fee": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "treasury_address",
+          "protocol_fee",
+          "fee_switch_bps"
+        ]
+      }
+    ],
+    "refi_requested": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "new_interest_rate_bps",
+          "new_duration_months",
+          "lock_expiry_ledger"
+        ]
+      }
+    ],
+    "refund": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id",
+          "amount"
+        ]
+      }
+    ],
+    "repay": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "loan_id",
+          "amount",
+          "0i128"
+        ]
+      },
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "loan_id",
+          "amount",
+          "remaining - amount"
+        ]
+      }
+    ],
+    "rst_appr": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id"
+        ]
+      }
+    ],
+    "rst_cncl": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "loan_id"
+        ]
+      }
+    ],
+    "rst_prop": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "loan_id"
+        ]
+      }
+    ],
+    "set_dpcl": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "cooldown"
+        ]
+      }
+    ],
+    "set_eicap": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "cap_bps"
+        ]
+      }
+    ],
+    "set_exposure_cap": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "max_amount",
+          "max_bps"
+        ]
+      }
+    ],
+    "set_fwaiv": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "waiver_ledgers"
+        ]
+      }
+    ],
+    "set_gov": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "governance"
+        ]
+      }
+    ],
+    "set_grace": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "grace_ledgers"
+        ]
+      }
+    ],
+    "set_ins": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "insurance_pool"
+        ]
+      }
+    ],
+    "set_limit": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "limit"
+        ]
+      }
+    ],
+    "set_max_loans": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "previous",
+          "max_loans"
+        ]
+      }
+    ],
+    "set_maxsw": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "amount"
+        ]
+      }
+    ],
+    "set_mindp": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "amount"
+        ]
+      }
+    ],
+    "set_msig": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "validator"
+        ]
+      }
+    ],
+    "set_penlt": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "daily_bps"
+        ]
+      }
+    ],
+    "set_qwin": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "window_ledgers"
+        ]
+      }
+    ],
+    "set_rcool": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "cooldown"
+        ]
+      }
+    ],
+    "set_rllw": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "window"
+        ]
+      }
+    ],
+    "set_vreg": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "registry"
+        ]
+      }
+    ],
+    "upg_prop": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "execute_after"
+        ]
+      }
+    ],
+    "upgrade": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "new_wasm_hash",
+          "ver + 1"
+        ]
+      }
+    ],
+    "withdraw": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "investor",
+          "amount",
+          "fee_amount",
+          "net_amount",
+          "utilization_bps"
+        ]
+      }
+    ],
+    "wl_add": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "contractor"
+        ]
+      },
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "address"
+        ]
+      }
+    ],
+    "wl_rm": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "contractor"
+        ]
+      },
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "address"
+        ]
+      }
+    ]
+  }
+}

@@ -66,6 +66,21 @@ export const httpRequestDurationSeconds = new Histogram({
   registers: [metricsRegistry],
 });
 
+/**
+ * Total HTTP requests partitioned by API version (issue #847), so a
+ * retirement decision for an old version is made from real traffic data
+ * rather than a guess. Version comes from the client-sent `Api-Version`
+ * request header, defaulting to `CURRENT_API_VERSION` (middleware/
+ * apiVersioning.ts) when absent — nearly all traffic today, since no client
+ * sends the header yet.
+ */
+export const httpRequestsByVersionTotal = new Counter({
+  name: "remitmortgage_http_requests_by_version_total",
+  help: "Total number of HTTP requests received, partitioned by API version.",
+  labelNames: ["version", "method", "route"] as const,
+  registers: [metricsRegistry],
+});
+
 // ---------------------------------------------------------------------------
 // Indexer / event-listener metrics
 // ---------------------------------------------------------------------------
@@ -203,6 +218,21 @@ export const schedulerJobsTotal = new Counter({
   name: "remitmortgage_scheduler_jobs_total",
   help: "Total background jobs executed.",
   labelNames: ["job_type", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
+// API key quota metrics
+// ---------------------------------------------------------------------------
+
+/**
+ * Total number of API requests rejected for exceeding their key's
+ * per-billing-period quota, by plan. See middleware/apiKeyQuota.ts.
+ */
+export const apiKeyQuotaExceededTotal = new Counter({
+  name: "remitmortgage_apikey_quota_exceeded_total",
+  help: "Total API requests rejected for exceeding the caller's per-billing-period quota.",
+  labelNames: ["plan"] as const,
   registers: [metricsRegistry],
 });
 

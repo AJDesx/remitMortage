@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "jest",
+  "mutate": [
+    "src/services/scoring.ts",
+    "src/services/loanStore.ts",
+    "src/middleware/auth.ts"
+  ],
+  "reporters": ["clear-text", "html", "json"],
+  "htmlReporter": { "fileName": "reports/mutation/mutation.html" },
+  "jsonReporter": { "fileName": "reports/mutation/mutation.json" },
+  "thresholds": { "high": 80, "low": 70, "break": 70 },
+  "tempDirName": ".stryker-tmp"
+}

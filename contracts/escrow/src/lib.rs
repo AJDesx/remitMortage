@@ -32,14 +32,17 @@ mod test_goal_consolidation;
 #[cfg(test)]
 mod test_attestor_change_timelock;
 
+#[cfg(test)]
+mod beneficiary_tests;
+
 pub use crate::errors::EscrowError;
 use crate::token_utils::get_token_client;
 use crate::types::DataKey;
 pub use crate::types::{
-    AutoDepositSchedule, BorrowerRecord, EscrowConfig, PendingAttestorChangeProposal,
-    PendingPenaltyProposal, PendingUpgradeRecord,
+    AutoDepositSchedule, BeneficiaryList, BeneficiarySplit, BorrowerRecord, EscrowConfig,
+    PendingAttestorChangeProposal, PendingPenaltyProposal, PendingUpgradeRecord,
 };
-use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, IntoVal, Symbol};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, IntoVal, Symbol};
 
 // Fallback TTL values, used only before `initialize` has stored a config.
 // Live values come from EscrowConfig so each network can be tuned separately.
@@ -47,6 +50,11 @@ const DEFAULT_INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const DEFAULT_INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 const DEFAULT_PERSISTENT_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const DEFAULT_PERSISTENT_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
+
+/// Default window, in ledgers, within which an admin must approve a
+/// hardship withdrawal request before it expires (~7 days at production
+/// ledger time). Admin-configurable via `set_hardship_approval_window_ledgers`.
+const DEFAULT_HARDSHIP_WINDOW_LEDGERS: u32 = 120_960;
 
 // Use a small constant in tests so ledger advances stay well within instance TTL.
 #[cfg(not(test))]
@@ -372,7 +380,8 @@ impl EscrowContract {
             // Matching is limited to the first deposit and the configured
             // reserve. A depleted reserve never changes the deposit result.
             let mut matched = 0i128;
-            if !record.released && !record.withdrawn && config.match_bps > 0 && config.match_cap > 0 {
+            if !record.released && !record.withdrawn && config.match_bps > 0 && config.match_cap > 0
+            {
                 let reserve = env
                     .storage()
                     .instance()
@@ -720,6 +729,297 @@ impl EscrowContract {
         }) // non_reentrant
     }
 
+    // ── Admin-Approved Hardship Withdrawal ───────────────────────────────
+
+    fn hardship_approval_window_ledgers(env: &Env) -> u32 {
+        let stored: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::HardshipApprovalWindowLedgers)
+            .unwrap_or(0);
+        if stored == 0 {
+            DEFAULT_HARDSHIP_WINDOW_LEDGERS
+        } else {
+            stored
+        }
+    }
+
+    fn hardship_period_ledgers(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::HardshipPeriodLedgers)
+            .unwrap_or(LEDGERS_PER_MONTH)
+    }
+
+    fn hardship_cap_per_period(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::HardshipCapPerPeriod)
+            .unwrap_or(0i128)
+    }
+
+    /// Admin configures the hardship withdrawal window, per-period cap, and
+    /// period length. Pass `0` for `approval_window_ledgers` to fall back to
+    /// `DEFAULT_HARDSHIP_WINDOW_LEDGERS`; pass `0` for `cap_per_period` to
+    /// disable the cap entirely; `period_ledgers` of `0` falls back to one
+    /// month.
+    pub fn set_hardship_config(
+        env: Env,
+        approval_window_ledgers: u32,
+        cap_per_period: i128,
+        period_ledgers: u32,
+    ) -> Result<(), EscrowError> {
+        let config = Self::get_config(&env)?;
+        config.admin.require_auth();
+
+        if cap_per_period < 0 {
+            return Err(EscrowError::InvalidAmount);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::HardshipApprovalWindowLedgers, &approval_window_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::HardshipCapPerPeriod, &cap_per_period);
+        env.storage().instance().set(
+            &DataKey::HardshipPeriodLedgers,
+            &if period_ledgers == 0 {
+                LEDGERS_PER_MONTH
+            } else {
+                period_ledgers
+            },
+        );
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Borrower requests a hardship withdrawal, carrying `reason_hash` — a
+    /// hash of the off-chain supporting reason or document, never the
+    /// document itself. The request is not actionable until an admin calls
+    /// `approve_hardship_withdrawal`, and expires if that doesn't happen
+    /// within the configured window.
+    pub fn request_hardship_withdrawal(
+        env: Env,
+        borrower: Address,
+        goal_id: Symbol,
+        reason_hash: BytesN<32>,
+    ) -> Result<(), EscrowError> {
+        borrower.require_auth();
+
+        let record = Self::get_borrower(&env, &borrower, &goal_id);
+        if record.deposited == 0 {
+            return Err(EscrowError::BorrowerNotFound);
+        }
+        if record.released {
+            return Err(EscrowError::AlreadyReleased);
+        }
+        if record.withdrawn {
+            return Err(EscrowError::AlreadyWithdrawn);
+        }
+        if record.seized {
+            return Err(EscrowError::AlreadySeized);
+        }
+
+        let key = DataKey::HardshipRequest(borrower.clone(), goal_id.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(EscrowError::HardshipRequestAlreadyExists);
+        }
+
+        let request = HardshipWithdrawalRequest {
+            reason_hash: reason_hash.clone(),
+            requested_at_ledger: env.ledger().sequence(),
+            approved: false,
+            approver: None,
+        };
+        env.storage().persistent().set(&key, &request);
+
+        env.events().publish(
+            (symbol_short!("hs_req"), goal_id.clone()),
+            (borrower.clone(), reason_hash),
+        );
+
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Admin approves a pending hardship withdrawal request. Fails with
+    /// `HardshipRequestExpired` (and clears the request) if the approval
+    /// window has already elapsed — an admin cannot "late-approve" a
+    /// request past its window; the borrower must submit a fresh one.
+    pub fn approve_hardship_withdrawal(
+        env: Env,
+        borrower: Address,
+        goal_id: Symbol,
+    ) -> Result<(), EscrowError> {
+        let config = Self::get_config(&env)?;
+        config.admin.require_auth();
+
+        let key = DataKey::HardshipRequest(borrower.clone(), goal_id.clone());
+        let mut request: HardshipWithdrawalRequest = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(EscrowError::HardshipRequestNotFound)?;
+
+        let window = Self::hardship_approval_window_ledgers(&env);
+        let current_ledger = env.ledger().sequence();
+        if current_ledger > request.requested_at_ledger + window {
+            env.storage().persistent().remove(&key);
+            return Err(EscrowError::HardshipRequestExpired);
+        }
+
+        request.approved = true;
+        request.approver = Some(config.admin.clone());
+        env.storage().persistent().set(&key, &request);
+
+        env.events().publish(
+            (symbol_short!("hs_appr"), goal_id.clone()),
+            (borrower.clone(), config.admin.clone(), request.reason_hash.clone()),
+        );
+
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Returns the hardship withdrawal request for a borrower/goal, if any.
+    pub fn get_hardship_request(
+        env: Env,
+        borrower: Address,
+        goal_id: Symbol,
+    ) -> Option<HardshipWithdrawalRequest> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::HardshipRequest(borrower, goal_id))
+    }
+
+    /// Executes an approved hardship withdrawal: the full principal plus
+    /// any accrued yield, with ZERO early-withdrawal penalty — the one
+    /// difference from `withdraw`, which this otherwise mirrors exactly
+    /// (same yield-vault unwind, same `TotalPooled`/record bookkeeping).
+    /// Capped per rolling period (see `set_hardship_config`); the approver
+    /// and reason hash are recorded in the payout event.
+    ///
+    /// Fails with `HardshipRequestNotApproved` if the request hasn't been
+    /// approved, or `HardshipRequestExpired` if the approval window has
+    /// elapsed since the request was filed (even if it was approved inside
+    /// the window — the borrower must act within that same window too, so
+    /// an approval can't be "banked" indefinitely).
+    pub fn withdraw_hardship(
+        env: Env,
+        borrower: Address,
+        goal_id: Symbol,
+    ) -> Result<i128, EscrowError> {
+        borrower.require_auth();
+        Self::non_reentrant(&env, || {
+            let config = Self::get_config(&env)?;
+            let mut record = Self::get_borrower(&env, &borrower, &goal_id);
+
+            if record.deposited == 0 {
+                return Err(EscrowError::BorrowerNotFound);
+            }
+            if record.released {
+                return Err(EscrowError::AlreadyReleased);
+            }
+            if record.withdrawn {
+                return Err(EscrowError::AlreadyWithdrawn);
+            }
+            if record.seized {
+                return Err(EscrowError::AlreadySeized);
+            }
+
+            let key = DataKey::HardshipRequest(borrower.clone(), goal_id.clone());
+            let request: HardshipWithdrawalRequest = env
+                .storage()
+                .persistent()
+                .get(&key)
+                .ok_or(EscrowError::HardshipRequestNotFound)?;
+
+            if !request.approved {
+                return Err(EscrowError::HardshipRequestNotApproved);
+            }
+
+            let window = Self::hardship_approval_window_ledgers(&env);
+            let current_ledger = env.ledger().sequence();
+            if current_ledger > request.requested_at_ledger + window {
+                env.storage().persistent().remove(&key);
+                return Err(EscrowError::HardshipRequestExpired);
+            }
+
+            // Same yield-vault unwind as the normal penalty path.
+            let mut amount_withdrawn = record.deposited;
+            if let Some(vault) = &config.yield_vault {
+                let yield_shares = Self::read_yield_shares(&env, &borrower, &goal_id);
+                if yield_shares > 0 {
+                    let invoke_args = soroban_sdk::vec![
+                        &env,
+                        env.current_contract_address().into_val(&env),
+                        yield_shares.into_val(&env)
+                    ];
+                    amount_withdrawn =
+                        env.invoke_contract(vault, &Symbol::new(&env, "withdraw"), invoke_args);
+
+                    let total_shares = Self::read_total_yield_shares(&env) - yield_shares;
+                    env.storage()
+                        .instance()
+                        .set(&DataKey::TotalYieldShares, &total_shares);
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::YieldShares(borrower.clone(), goal_id.clone()));
+                }
+            }
+            let accrued_yield = amount_withdrawn.saturating_sub(record.deposited).max(0);
+
+            // Zero penalty: the borrower's full deposited principal, not
+            // `deposited - penalty` like the normal path.
+            let refund = record.deposited + accrued_yield;
+
+            // Per-period cap on waived principal. Checked (and recorded)
+            // BEFORE any token transfer, so a rejected request leaves no
+            // partial state.
+            let period_ledgers = Self::hardship_period_ledgers(&env);
+            let period_id = current_ledger / period_ledgers.max(1);
+            let period_key =
+                DataKey::HardshipWithdrawnInPeriod(borrower.clone(), goal_id.clone(), period_id);
+            let withdrawn_this_period: i128 =
+                env.storage().persistent().get(&period_key).unwrap_or(0i128);
+            let cap = Self::hardship_cap_per_period(&env);
+            if cap > 0 && withdrawn_this_period + record.deposited > cap {
+                return Err(EscrowError::HardshipAmountExceedsCap);
+            }
+            env.storage()
+                .persistent()
+                .set(&period_key, &(withdrawn_this_period + record.deposited));
+
+            let token = get_token_client(&env, &config.token);
+            token.transfer(&env.current_contract_address(), &borrower, &refund);
+
+            let total = Self::read_total_pooled(&env) - record.deposited;
+            env.storage().instance().set(&DataKey::TotalPooled, &total);
+
+            record.withdrawn = true;
+            record.deposited = 0;
+            Self::set_borrower(&env, &borrower, &goal_id, &record);
+            Self::owner_activity(&env, &borrower, &goal_id);
+
+            env.storage().persistent().remove(&key);
+
+            Self::extend_instance_ttl(&env);
+
+            env.events().publish(
+                (symbol_short!("hs_pay"), goal_id.clone()),
+                (
+                    borrower.clone(),
+                    refund,
+                    request.approver.clone(),
+                    request.reason_hash.clone(),
+                ),
+            );
+
+            Ok(refund)
+        }) // non_reentrant
+    }
+
     /// Toggle or set the auto-rollover opt-in flag for a borrower's escrow goal.
     /// Settable by the borrower at creation or any time before maturity.
     pub fn set_auto_rollover(
@@ -917,6 +1217,121 @@ impl EscrowContract {
             (pending.tier1, pending.tier2, pending.tier3, pending.tier4),
         );
 
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    // ── Multi-beneficiary split ──────────────────────────────────────────
+
+    /// Maximum number of recipients allowed in a single beneficiary list.
+    ///
+    /// Kept small so that the per-recipient token transfers inside
+    /// `claim_as_beneficiary` fit comfortably within one Soroban invocation
+    /// budget, and so that storage entry size stays bounded.
+    const MAX_BENEFICIARY_SPLITS: u32 = 10;
+
+    /// Validate a proposed `BeneficiaryList` before it is persisted.
+    ///
+    /// Rules enforced here so they are checked at *configuration time*, not at
+    /// claim time (per the acceptance criteria):
+    ///
+    /// 1. List is non-empty and does not exceed `MAX_BENEFICIARY_SPLITS`.
+    /// 2. Every `share_bps` is > 0.
+    /// 3. No duplicate beneficiary addresses.
+    /// 4. The borrower's own address is not among the recipients.
+    /// 5. The sum of all `share_bps` equals exactly 10 000.
+    fn validate_beneficiary_list(
+        borrower: &Address,
+        list: &crate::types::BeneficiaryList,
+    ) -> Result<(), EscrowError> {
+        let len = list.splits.len();
+        if len == 0 || len > Self::MAX_BENEFICIARY_SPLITS {
+            return Err(EscrowError::BeneficiaryListTooLarge);
+        }
+        let mut total_bps: u32 = 0;
+        for i in 0..len {
+            let split = list.splits.get_unchecked(i);
+            if split.share_bps == 0 {
+                return Err(EscrowError::InvalidBeneficiaryShares);
+            }
+            if &split.beneficiary == borrower {
+                return Err(EscrowError::UnauthorizedBeneficiary);
+            }
+            // Duplicate-address check — O(n²) but n ≤ MAX_BENEFICIARY_SPLITS.
+            for j in (i + 1)..len {
+                if list.splits.get_unchecked(j).beneficiary == split.beneficiary {
+                    return Err(EscrowError::UnauthorizedBeneficiary);
+                }
+            }
+            total_bps = total_bps
+                .checked_add(split.share_bps)
+                .ok_or(EscrowError::InvalidBeneficiaryShares)?;
+        }
+        if total_bps != 10_000 {
+            return Err(EscrowError::InvalidBeneficiaryShares);
+        }
+        Ok(())
+    }
+
+    /// Designate a multi-recipient beneficiary split for one owner/goal escrow.
+    ///
+    /// The shares are validated at call time; the transaction is rejected if
+    /// they do not sum to exactly 10 000 bps.  Setting a list also clears the
+    /// legacy single-address beneficiary key for the same goal, so the two
+    /// mechanisms are mutually exclusive.
+    pub fn set_beneficiary_list(
+        env: Env,
+        borrower: Address,
+        goal_id: Symbol,
+        list: crate::types::BeneficiaryList,
+    ) -> Result<(), EscrowError> {
+        borrower.require_auth();
+        Self::check_not_paused(&env)?;
+        Self::validate_beneficiary_list(&borrower, &list)?;
+
+        // Remove any legacy single-beneficiary entry for this goal.
+        let legacy_key = DataKey::Beneficiary(borrower.clone(), goal_id.clone());
+        env.storage().persistent().remove(&legacy_key);
+
+        let list_key = DataKey::BeneficiaryList(borrower.clone(), goal_id.clone());
+        env.storage().persistent().set(&list_key, &list);
+        Self::extend_persistent_ttl(&env, &list_key);
+
+        Self::owner_activity(&env, &borrower, &goal_id);
+        env.events().publish(
+            (symbol_short!("ben_list"), goal_id),
+            (borrower, list.splits.len()),
+        );
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Return the currently configured multi-beneficiary list, or `None`.
+    pub fn get_beneficiary_list(
+        env: Env,
+        borrower: Address,
+        goal_id: Symbol,
+    ) -> Option<crate::types::BeneficiaryList> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BeneficiaryList(borrower, goal_id))
+    }
+
+    /// Remove the multi-beneficiary list for the given goal.  The owner
+    /// signature is required.  This does not reinstate a legacy single address.
+    pub fn remove_beneficiary_list(
+        env: Env,
+        borrower: Address,
+        goal_id: Symbol,
+    ) -> Result<(), EscrowError> {
+        borrower.require_auth();
+        Self::check_not_paused(&env)?;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::BeneficiaryList(borrower.clone(), goal_id.clone()));
+        Self::owner_activity(&env, &borrower, &goal_id);
+        env.events()
+            .publish((symbol_short!("ben_list"), goal_id), (borrower, 0u32));
         Self::extend_instance_ttl(&env);
         Ok(())
     }
@@ -1153,6 +1568,19 @@ impl EscrowContract {
 
     /// Transfer the funded owner/goal escrow to its currently designated
     /// beneficiary after inactivity and an authenticated attestor quorum.
+    ///
+    /// Routing logic (checked in priority order):
+    ///
+    /// 1. **Multi-split** — if a `BeneficiaryList` is configured for this
+    ///    (borrower, goal_id) pair the caller must be one of the listed
+    ///    addresses.  Each recipient receives `amount * share_bps / 10_000`
+    ///    tokens.  A single call by any one of the beneficiaries claims the
+    ///    entire escrow and disburses proportional shares to *all* of them in
+    ///    one transaction.
+    ///
+    /// 2. **Legacy single-address** — falls back to the original single
+    ///    `Beneficiary(borrower, goal_id)` key when no list is present,
+    ///    preserving full backward compatibility.
     pub fn claim_as_beneficiary(
         env: Env,
         borrower: Address,
@@ -1161,16 +1589,62 @@ impl EscrowContract {
         attestations: soroban_sdk::Vec<Address>,
     ) -> Result<i128, EscrowError> {
         Self::non_reentrant(&env, || {
-            let configured: Address = env
+            // ── 1. Resolve beneficiary configuration ──────────────────────
+            //
+            // We support two storage layouts:
+            //   a) BeneficiaryList(borrower, goal_id)  →  multi-split (new)
+            //   b) Beneficiary(borrower, goal_id)       →  single address (legacy)
+            //
+            // The list takes precedence when both are somehow present, though
+            // `set_beneficiary_list` always clears the legacy key.
+            let maybe_list: Option<crate::types::BeneficiaryList> = env
                 .storage()
                 .persistent()
-                .get(&DataKey::Beneficiary(borrower.clone(), goal_id.clone()))
-                .ok_or(EscrowError::BeneficiaryNotConfigured)?;
-            if configured != beneficiary {
-                return Err(EscrowError::UnauthorizedBeneficiary);
-            }
+                .get(&DataKey::BeneficiaryList(borrower.clone(), goal_id.clone()));
+
+            // Verify that the caller is a configured recipient and collect the
+            // per-recipient split ratios.  For the single-address legacy path
+            // we synthesise a one-entry list at 10 000 bps.
+            let splits: soroban_sdk::Vec<crate::types::BeneficiarySplit> = match &maybe_list {
+                Some(list) => {
+                    // The caller must appear in the list.
+                    let mut found = false;
+                    for i in 0..list.splits.len() {
+                        if list.splits.get_unchecked(i).beneficiary == beneficiary {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return Err(EscrowError::UnauthorizedBeneficiary);
+                    }
+                    list.splits.clone()
+                }
+                None => {
+                    // Legacy single-address path.
+                    let configured: Address = env
+                        .storage()
+                        .persistent()
+                        .get(&DataKey::Beneficiary(borrower.clone(), goal_id.clone()))
+                        .ok_or(EscrowError::BeneficiaryNotConfigured)?;
+                    if configured != beneficiary {
+                        return Err(EscrowError::UnauthorizedBeneficiary);
+                    }
+                    soroban_sdk::vec![
+                        &env,
+                        crate::types::BeneficiarySplit {
+                            beneficiary: beneficiary.clone(),
+                            share_bps: 10_000,
+                        }
+                    ]
+                }
+            };
+
+            // The caller (one of the listed beneficiaries) must authorise the
+            // transaction.
             beneficiary.require_auth();
 
+            // ── 2. Duplicate-claim guard ───────────────────────────────────
             let mut record = Self::get_borrower(&env, &borrower, &goal_id);
             if env
                 .storage()
@@ -1183,9 +1657,13 @@ impl EscrowContract {
             {
                 return Err(EscrowError::BeneficiaryAlreadyClaimed);
             }
+
+            // ── 3. Funds check ────────────────────────────────────────────
             if record.deposited <= 0 || record.released || record.withdrawn || record.seized {
                 return Err(EscrowError::NoClaimableFunds);
             }
+
+            // ── 4. Inactivity check ───────────────────────────────────────
             let period = env
                 .storage()
                 .instance()
@@ -1196,6 +1674,7 @@ impl EscrowContract {
                 return Err(EscrowError::BeneficiaryInactivityNotElapsed);
             }
 
+            // ── 5. Attestation quorum check ───────────────────────────────
             let quorum = Self::attestors(&env)?;
             if attestations.is_empty() {
                 return Err(EscrowError::InsufficientAttestationQuorum);
@@ -1225,8 +1704,9 @@ impl EscrowContract {
                 return Err(EscrowError::InsufficientAttestationQuorum);
             }
 
+            // ── 6. Resolve claimable amount (principal + optional yield) ──
             let config = Self::get_config(&env)?;
-            let mut amount = record.deposited;
+            let mut total_amount = record.deposited;
             let yield_shares = Self::read_yield_shares(&env, &borrower, &goal_id);
             if let Some(vault) = &config.yield_vault {
                 if yield_shares > 0 {
@@ -1235,7 +1715,7 @@ impl EscrowContract {
                         env.current_contract_address().into_val(&env),
                         yield_shares.into_val(&env),
                     ];
-                    amount =
+                    total_amount =
                         env.invoke_contract(vault, &Symbol::new(&env, "withdraw"), invoke_args);
                     let total_shares = Self::read_total_yield_shares(&env) - yield_shares;
                     env.storage()
@@ -1247,29 +1727,52 @@ impl EscrowContract {
                 }
             }
             let principal = record.deposited;
-            // State is changed before the external token call; Soroban rolls
-            // back both changes if the transfer fails.
+
+            // ── 7. Mutate state BEFORE all external token calls ───────────
+            //
+            // Soroban rolls back the entire transaction atomically if any
+            // subsequent call fails, so zeroing state here is safe.
             record.deposited = 0;
             env.storage().persistent().set(
                 &DataKey::BeneficiaryClaimed(borrower.clone(), goal_id.clone()),
                 &true,
             );
             Self::set_borrower(&env, &borrower, &goal_id, &record);
-            // `TotalPooled` tracks deposited principal, not accrued yield.
-            // Remove exactly the principal recorded for this escrow.
-            let total = Self::read_total_pooled(&env).saturating_sub(principal);
-            env.storage().instance().set(&DataKey::TotalPooled, &total);
-            get_token_client(&env, &config.token).transfer(
-                &env.current_contract_address(),
-                &beneficiary,
-                &amount,
-            );
+            // `TotalPooled` tracks deposited principal only, not accrued yield.
+            let new_total = Self::read_total_pooled(&env).saturating_sub(principal);
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalPooled, &new_total);
+
+            // ── 8. Distribute funds proportionally to each recipient ──────
+            //
+            // For rounding: each recipient receives floor(total * bps / 10_000).
+            // Any 1-stroop remainder from integer division accumulates in
+            // `remainder` and is given to the first recipient in the list,
+            // keeping the total transferred equal to `total_amount`.
+            let token = get_token_client(&env, &config.token);
+            let contract_addr = env.current_contract_address();
+            let mut distributed: i128 = 0;
+            for i in 0..splits.len() {
+                let split = splits.get_unchecked(i);
+                let share = if i == splits.len() - 1 {
+                    // Last recipient gets whatever is left to avoid dust from
+                    // integer rounding across multiple recipients.
+                    total_amount - distributed
+                } else {
+                    (total_amount * i128::from(split.share_bps)) / 10_000
+                };
+                token.transfer(&contract_addr, &split.beneficiary, &share);
+                distributed += share;
+            }
+
+            // ── 9. Emit event ─────────────────────────────────────────────
             env.events().publish(
                 (symbol_short!("ben_claim"), goal_id),
-                (borrower, beneficiary, amount),
+                (borrower, beneficiary, total_amount),
             );
             Self::extend_instance_ttl(&env);
-            Ok(amount)
+            Ok(total_amount)
         })
     }
 

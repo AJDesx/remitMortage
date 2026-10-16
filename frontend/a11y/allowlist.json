@@ -1,0 +1,4 @@
+{
+  "_comment": "Reviewed exceptions to the axe gate. Every entry needs a real justification, a reviewer and a review date, and should carry an `expires` date so it gets revisited. Prefer fixing the violation. Validated by __tests__/a11y-axe-lib.test.ts.",
+  "entries": []
+}

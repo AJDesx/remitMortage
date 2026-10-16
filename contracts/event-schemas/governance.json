@@ -1,0 +1,34 @@
+{
+  "contract": "governance",
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "Initial baseline"
+    }
+  ],
+  "events": {
+    "delegate": [
+      {
+        "topicArgs": [
+          "delegator"
+        ],
+        "dataKind": "value",
+        "data": [
+          "delegate"
+        ]
+      }
+    ],
+    "revoke": [
+      {
+        "topicArgs": [
+          "delegator"
+        ],
+        "dataKind": "value",
+        "data": [
+          "delegate"
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clamav
+  labels:
+    app: clamav
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clamav
+  template:
+    metadata:
+      labels:
+        app: clamav
+    spec:
+      containers:
+        - name: clamav
+          image: clamav/clamav:1.4.3
+          ports:
+            - name: clamd
+              containerPort: 3310
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          startupProbe:
+            tcpSocket:
+              port: clamd
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: clamd
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: clamd
+            periodSeconds: 30

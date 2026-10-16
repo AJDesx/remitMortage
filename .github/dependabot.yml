@@ -1,5 +1,17 @@
 version: 1
 updates:
+  # Keep pinned GitHub Actions fresh through reviewable update pull requests.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(actions)"
+    labels:
+      - "dependencies"
+      - "security"
+
   # Rust dependencies (contracts directory)
   - package-ecosystem: "cargo"
     directory: "/contracts"

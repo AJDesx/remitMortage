@@ -1,0 +1,70 @@
+{
+  "contract": "insurance-pool",
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "Initial baseline"
+    }
+  ],
+  "events": {
+    "batch_claim": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "claims.len()",
+          "total_requested",
+          "total_paid"
+        ]
+      }
+    ],
+    "claim": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "recipient",
+          "amount"
+        ]
+      },
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "recipient",
+          "payout"
+        ]
+      }
+    ],
+    "fund": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "from",
+          "amount"
+        ]
+      }
+    ],
+    "premium_recorded": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "from",
+          "amount"
+        ]
+      }
+    ],
+    "set_pool": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "lending_pool"
+        ]
+      }
+    ]
+  }
+}

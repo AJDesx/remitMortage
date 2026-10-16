@@ -5,6 +5,7 @@ import { Router } from "express";
 import { prisma } from "../services/db.js";
 import { requireScopedApiKey } from "../middleware/apiKeyAuth.js";
 import { exportRateLimiter, recordExportedRows } from "../middleware/exportRateLimit.js";
+import { apiKeyQuotaMiddleware } from "../middleware/apiKeyQuota.js";
 
 export const exportsRouter = Router();
 
@@ -24,6 +25,7 @@ type TransactionType = keyof typeof TRANSACTION_SOURCES;
 exportsRouter.get(
   "/transactions",
   requireScopedApiKey(TRANSACTIONS_SCOPE),
+  apiKeyQuotaMiddleware(),
   exportRateLimiter(TRANSACTIONS_SCOPE),
   async (req, res) => {
     const type = String(req.query.type ?? "repayments") as TransactionType;

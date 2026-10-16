@@ -141,6 +141,7 @@ export async function runApplicationSlaMonitorJob(): Promise<{ scannedCount: num
         where: { id: app.id },
         data: {
           slaAlertSentAt: now,
+          version: { increment: 1 },
         },
       });
     }

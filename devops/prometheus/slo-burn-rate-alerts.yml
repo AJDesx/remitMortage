@@ -1,0 +1,384 @@
+# GENERATED FILE — do not edit by hand.
+# Source: devops/slo/slos.json   Generator: scripts/generate-slo-artifacts.mjs
+#
+# Multi-window, multi-burn-rate SLO alerts (Google SRE Workbook, ch. 5).
+# A tier fires only when BOTH its long and short windows burn error budget
+# faster than the tier's burn rate, so brief blips do not page and recoveries
+# resolve quickly. Fast burns ("page") go to PagerDuty; slow burns ("ticket")
+# open a lower-severity ticket. Policy: docs/SLO_ERROR_BUDGET_POLICY.md.
+#
+#   # prometheus.yml
+#   rule_files:
+#     - /etc/prometheus/rules/slo-burn-rate-alerts.yml
+
+groups:
+  - name: remitmortgage-slo-recording
+    interval: 30s
+    rules:
+      - record: slo:sli_error:ratio_rate5m
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{status_code=~"5..", route!~"/metrics|/api/health"}[5m])) / sum(rate(remitmortgage_http_requests_total{route!~"/metrics|/api/health"}[5m]))
+        labels:
+          slo: api-availability
+      - record: slo:sli_error:ratio_rate30m
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{status_code=~"5..", route!~"/metrics|/api/health"}[30m])) / sum(rate(remitmortgage_http_requests_total{route!~"/metrics|/api/health"}[30m]))
+        labels:
+          slo: api-availability
+      - record: slo:sli_error:ratio_rate1h
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{status_code=~"5..", route!~"/metrics|/api/health"}[1h])) / sum(rate(remitmortgage_http_requests_total{route!~"/metrics|/api/health"}[1h]))
+        labels:
+          slo: api-availability
+      - record: slo:sli_error:ratio_rate2h
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{status_code=~"5..", route!~"/metrics|/api/health"}[2h])) / sum(rate(remitmortgage_http_requests_total{route!~"/metrics|/api/health"}[2h]))
+        labels:
+          slo: api-availability
+      - record: slo:sli_error:ratio_rate6h
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{status_code=~"5..", route!~"/metrics|/api/health"}[6h])) / sum(rate(remitmortgage_http_requests_total{route!~"/metrics|/api/health"}[6h]))
+        labels:
+          slo: api-availability
+      - record: slo:sli_error:ratio_rate1d
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{status_code=~"5..", route!~"/metrics|/api/health"}[1d])) / sum(rate(remitmortgage_http_requests_total{route!~"/metrics|/api/health"}[1d]))
+        labels:
+          slo: api-availability
+      - record: slo:sli_error:ratio_rate3d
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{status_code=~"5..", route!~"/metrics|/api/health"}[3d])) / sum(rate(remitmortgage_http_requests_total{route!~"/metrics|/api/health"}[3d]))
+        labels:
+          slo: api-availability
+      - record: slo:sli_error:ratio_rate30d
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{status_code=~"5..", route!~"/metrics|/api/health"}[30d])) / sum(rate(remitmortgage_http_requests_total{route!~"/metrics|/api/health"}[30d]))
+        labels:
+          slo: api-availability
+      - record: slo:error_budget_remaining:ratio
+        expr: |
+          1 - (slo:sli_error:ratio_rate30d{slo="api-availability"} / 0.001)
+        labels:
+          slo: api-availability
+      - record: slo:sli_error:ratio_rate5m
+        expr: |
+          1 - (sum(rate(remitmortgage_http_request_duration_seconds_bucket{le="0.5", route!~"/metrics|/api/health"}[5m])) / sum(rate(remitmortgage_http_request_duration_seconds_count{route!~"/metrics|/api/health"}[5m])))
+        labels:
+          slo: api-latency
+      - record: slo:sli_error:ratio_rate30m
+        expr: |
+          1 - (sum(rate(remitmortgage_http_request_duration_seconds_bucket{le="0.5", route!~"/metrics|/api/health"}[30m])) / sum(rate(remitmortgage_http_request_duration_seconds_count{route!~"/metrics|/api/health"}[30m])))
+        labels:
+          slo: api-latency
+      - record: slo:sli_error:ratio_rate1h
+        expr: |
+          1 - (sum(rate(remitmortgage_http_request_duration_seconds_bucket{le="0.5", route!~"/metrics|/api/health"}[1h])) / sum(rate(remitmortgage_http_request_duration_seconds_count{route!~"/metrics|/api/health"}[1h])))
+        labels:
+          slo: api-latency
+      - record: slo:sli_error:ratio_rate2h
+        expr: |
+          1 - (sum(rate(remitmortgage_http_request_duration_seconds_bucket{le="0.5", route!~"/metrics|/api/health"}[2h])) / sum(rate(remitmortgage_http_request_duration_seconds_count{route!~"/metrics|/api/health"}[2h])))
+        labels:
+          slo: api-latency
+      - record: slo:sli_error:ratio_rate6h
+        expr: |
+          1 - (sum(rate(remitmortgage_http_request_duration_seconds_bucket{le="0.5", route!~"/metrics|/api/health"}[6h])) / sum(rate(remitmortgage_http_request_duration_seconds_count{route!~"/metrics|/api/health"}[6h])))
+        labels:
+          slo: api-latency
+      - record: slo:sli_error:ratio_rate1d
+        expr: |
+          1 - (sum(rate(remitmortgage_http_request_duration_seconds_bucket{le="0.5", route!~"/metrics|/api/health"}[1d])) / sum(rate(remitmortgage_http_request_duration_seconds_count{route!~"/metrics|/api/health"}[1d])))
+        labels:
+          slo: api-latency
+      - record: slo:sli_error:ratio_rate3d
+        expr: |
+          1 - (sum(rate(remitmortgage_http_request_duration_seconds_bucket{le="0.5", route!~"/metrics|/api/health"}[3d])) / sum(rate(remitmortgage_http_request_duration_seconds_count{route!~"/metrics|/api/health"}[3d])))
+        labels:
+          slo: api-latency
+      - record: slo:sli_error:ratio_rate30d
+        expr: |
+          1 - (sum(rate(remitmortgage_http_request_duration_seconds_bucket{le="0.5", route!~"/metrics|/api/health"}[30d])) / sum(rate(remitmortgage_http_request_duration_seconds_count{route!~"/metrics|/api/health"}[30d])))
+        labels:
+          slo: api-latency
+      - record: slo:error_budget_remaining:ratio
+        expr: |
+          1 - (slo:sli_error:ratio_rate30d{slo="api-latency"} / 0.05)
+        labels:
+          slo: api-latency
+      - record: slo:sli_error:ratio_rate5m
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*", status_code=~"5.."}[5m])) / sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*"}[5m]))
+        labels:
+          slo: tx-submission-success
+      - record: slo:sli_error:ratio_rate30m
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*", status_code=~"5.."}[30m])) / sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*"}[30m]))
+        labels:
+          slo: tx-submission-success
+      - record: slo:sli_error:ratio_rate1h
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*", status_code=~"5.."}[1h])) / sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*"}[1h]))
+        labels:
+          slo: tx-submission-success
+      - record: slo:sli_error:ratio_rate2h
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*", status_code=~"5.."}[2h])) / sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*"}[2h]))
+        labels:
+          slo: tx-submission-success
+      - record: slo:sli_error:ratio_rate6h
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*", status_code=~"5.."}[6h])) / sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*"}[6h]))
+        labels:
+          slo: tx-submission-success
+      - record: slo:sli_error:ratio_rate1d
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*", status_code=~"5.."}[1d])) / sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*"}[1d]))
+        labels:
+          slo: tx-submission-success
+      - record: slo:sli_error:ratio_rate3d
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*", status_code=~"5.."}[3d])) / sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*"}[3d]))
+        labels:
+          slo: tx-submission-success
+      - record: slo:sli_error:ratio_rate30d
+        expr: |
+          sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*", status_code=~"5.."}[30d])) / sum(rate(remitmortgage_http_requests_total{method="POST", route=~"/api/(loan|milestone).*"}[30d]))
+        labels:
+          slo: tx-submission-success
+      - record: slo:error_budget_remaining:ratio
+        expr: |
+          1 - (slo:sli_error:ratio_rate30d{slo="tx-submission-success"} / 0.005)
+        labels:
+          slo: tx-submission-success
+
+  - name: remitmortgage-slo-burn-rate
+    interval: 30s
+    rules:
+      - alert: SLOBurnFast_ApiAvailability
+        expr: |
+          slo:sli_error:ratio_rate1h{slo="api-availability"} > (14.4 * 0.001)
+          and
+          slo:sli_error:ratio_rate5m{slo="api-availability"} > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: page
+          team: ops
+          component: api
+          slo: api-availability
+          burn_tier: fast
+        annotations:
+          summary: >-
+            API availability SLO is burning error budget at 14.4x over 1h and 5m.
+          description: >-
+            At this rate 2.0% of the 30-day error budget
+            (target 99.9%) is consumed within 1h. SLI: Any client request to the public API succeeds (is not a server error).
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md
+      - alert: SLOBurnMedium_ApiAvailability
+        expr: |
+          slo:sli_error:ratio_rate6h{slo="api-availability"} > (6 * 0.001)
+          and
+          slo:sli_error:ratio_rate30m{slo="api-availability"} > (6 * 0.001)
+        for: 2m
+        labels:
+          severity: page
+          team: ops
+          component: api
+          slo: api-availability
+          burn_tier: medium
+        annotations:
+          summary: >-
+            API availability SLO is burning error budget at 6x over 6h and 30m.
+          description: >-
+            At this rate 5.0% of the 30-day error budget
+            (target 99.9%) is consumed within 6h. SLI: Any client request to the public API succeeds (is not a server error).
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md
+      - alert: SLOBurnSlow_ApiAvailability
+        expr: |
+          slo:sli_error:ratio_rate1d{slo="api-availability"} > (3 * 0.001)
+          and
+          slo:sli_error:ratio_rate2h{slo="api-availability"} > (3 * 0.001)
+        for: 15m
+        labels:
+          severity: ticket
+          team: ops
+          component: api
+          slo: api-availability
+          burn_tier: slow
+        annotations:
+          summary: >-
+            API availability SLO is burning error budget at 3x over 1d and 2h.
+          description: >-
+            At this rate 10.0% of the 30-day error budget
+            (target 99.9%) is consumed within 1d. SLI: Any client request to the public API succeeds (is not a server error).
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md
+      - alert: SLOBurnGradual_ApiAvailability
+        expr: |
+          slo:sli_error:ratio_rate3d{slo="api-availability"} > (1 * 0.001)
+          and
+          slo:sli_error:ratio_rate6h{slo="api-availability"} > (1 * 0.001)
+        for: 15m
+        labels:
+          severity: ticket
+          team: ops
+          component: api
+          slo: api-availability
+          burn_tier: gradual
+        annotations:
+          summary: >-
+            API availability SLO is burning error budget at 1x over 3d and 6h.
+          description: >-
+            At this rate 10.0% of the 30-day error budget
+            (target 99.9%) is consumed within 3d. SLI: Any client request to the public API succeeds (is not a server error).
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md
+      - alert: SLOBurnFast_ApiLatency
+        expr: |
+          slo:sli_error:ratio_rate1h{slo="api-latency"} > (14.4 * 0.05)
+          and
+          slo:sli_error:ratio_rate5m{slo="api-latency"} > (14.4 * 0.05)
+        for: 2m
+        labels:
+          severity: page
+          team: ops
+          component: api
+          slo: api-latency
+          burn_tier: fast
+        annotations:
+          summary: >-
+            API request latency SLO is burning error budget at 14.4x over 1h and 5m.
+          description: >-
+            At this rate 2.0% of the 30-day error budget
+            (target 95%) is consumed within 1h. SLI: 95% of API requests complete in under 500 ms.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md
+      - alert: SLOBurnMedium_ApiLatency
+        expr: |
+          slo:sli_error:ratio_rate6h{slo="api-latency"} > (6 * 0.05)
+          and
+          slo:sli_error:ratio_rate30m{slo="api-latency"} > (6 * 0.05)
+        for: 2m
+        labels:
+          severity: page
+          team: ops
+          component: api
+          slo: api-latency
+          burn_tier: medium
+        annotations:
+          summary: >-
+            API request latency SLO is burning error budget at 6x over 6h and 30m.
+          description: >-
+            At this rate 5.0% of the 30-day error budget
+            (target 95%) is consumed within 6h. SLI: 95% of API requests complete in under 500 ms.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md
+      - alert: SLOBurnSlow_ApiLatency
+        expr: |
+          slo:sli_error:ratio_rate1d{slo="api-latency"} > (3 * 0.05)
+          and
+          slo:sli_error:ratio_rate2h{slo="api-latency"} > (3 * 0.05)
+        for: 15m
+        labels:
+          severity: ticket
+          team: ops
+          component: api
+          slo: api-latency
+          burn_tier: slow
+        annotations:
+          summary: >-
+            API request latency SLO is burning error budget at 3x over 1d and 2h.
+          description: >-
+            At this rate 10.0% of the 30-day error budget
+            (target 95%) is consumed within 1d. SLI: 95% of API requests complete in under 500 ms.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md
+      - alert: SLOBurnGradual_ApiLatency
+        expr: |
+          slo:sli_error:ratio_rate3d{slo="api-latency"} > (1 * 0.05)
+          and
+          slo:sli_error:ratio_rate6h{slo="api-latency"} > (1 * 0.05)
+        for: 15m
+        labels:
+          severity: ticket
+          team: ops
+          component: api
+          slo: api-latency
+          burn_tier: gradual
+        annotations:
+          summary: >-
+            API request latency SLO is burning error budget at 1x over 3d and 6h.
+          description: >-
+            At this rate 10.0% of the 30-day error budget
+            (target 95%) is consumed within 3d. SLI: 95% of API requests complete in under 500 ms.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md
+      - alert: SLOBurnFast_TxSubmissionSuccess
+        expr: |
+          slo:sli_error:ratio_rate1h{slo="tx-submission-success"} > (14.4 * 0.005)
+          and
+          slo:sli_error:ratio_rate5m{slo="tx-submission-success"} > (14.4 * 0.005)
+        for: 2m
+        labels:
+          severity: page
+          team: ops
+          component: transactions
+          slo: tx-submission-success
+          burn_tier: fast
+        annotations:
+          summary: >-
+            Transaction submission success SLO is burning error budget at 14.4x over 1h and 5m.
+          description: >-
+            At this rate 2.0% of the 30-day error budget
+            (target 99.5%) is consumed within 1h. SLI: Loan and milestone write requests (the paths that build and submit Soroban transactions) do not fail with a server error.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md
+      - alert: SLOBurnMedium_TxSubmissionSuccess
+        expr: |
+          slo:sli_error:ratio_rate6h{slo="tx-submission-success"} > (6 * 0.005)
+          and
+          slo:sli_error:ratio_rate30m{slo="tx-submission-success"} > (6 * 0.005)
+        for: 2m
+        labels:
+          severity: page
+          team: ops
+          component: transactions
+          slo: tx-submission-success
+          burn_tier: medium
+        annotations:
+          summary: >-
+            Transaction submission success SLO is burning error budget at 6x over 6h and 30m.
+          description: >-
+            At this rate 5.0% of the 30-day error budget
+            (target 99.5%) is consumed within 6h. SLI: Loan and milestone write requests (the paths that build and submit Soroban transactions) do not fail with a server error.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md
+      - alert: SLOBurnSlow_TxSubmissionSuccess
+        expr: |
+          slo:sli_error:ratio_rate1d{slo="tx-submission-success"} > (3 * 0.005)
+          and
+          slo:sli_error:ratio_rate2h{slo="tx-submission-success"} > (3 * 0.005)
+        for: 15m
+        labels:
+          severity: ticket
+          team: ops
+          component: transactions
+          slo: tx-submission-success
+          burn_tier: slow
+        annotations:
+          summary: >-
+            Transaction submission success SLO is burning error budget at 3x over 1d and 2h.
+          description: >-
+            At this rate 10.0% of the 30-day error budget
+            (target 99.5%) is consumed within 1d. SLI: Loan and milestone write requests (the paths that build and submit Soroban transactions) do not fail with a server error.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md
+      - alert: SLOBurnGradual_TxSubmissionSuccess
+        expr: |
+          slo:sli_error:ratio_rate3d{slo="tx-submission-success"} > (1 * 0.005)
+          and
+          slo:sli_error:ratio_rate6h{slo="tx-submission-success"} > (1 * 0.005)
+        for: 15m
+        labels:
+          severity: ticket
+          team: ops
+          component: transactions
+          slo: tx-submission-success
+          burn_tier: gradual
+        annotations:
+          summary: >-
+            Transaction submission success SLO is burning error budget at 1x over 3d and 6h.
+          description: >-
+            At this rate 10.0% of the 30-day error budget
+            (target 99.5%) is consumed within 3d. SLI: Loan and milestone write requests (the paths that build and submit Soroban transactions) do not fail with a server error.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/SLO_ERROR_BUDGET_POLICY.md

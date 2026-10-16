@@ -11,6 +11,30 @@ pub struct BeneficiaryAttestorConfig {
     pub threshold: u32,
 }
 
+/// One entry in a multi-beneficiary split list.
+///
+/// `share_bps` is this recipient's entitlement expressed in basis points
+/// (1 bp = 0.01 %).  All entries in a `BeneficiaryList` must sum to exactly
+/// 10 000 bps (= 100 %).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BeneficiarySplit {
+    /// The receiving address.
+    pub beneficiary: Address,
+    /// Share of the total claimable amount in basis points (0 < share_bps ≤ 10_000).
+    pub share_bps: u32,
+}
+
+/// Ordered list of beneficiary splits stored per (owner, goal_id).
+///
+/// The sum of all `share_bps` values MUST equal 10 000 at the time the list
+/// is persisted; the contract rejects any configuration that violates this.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BeneficiaryList {
+    pub splits: Vec<BeneficiarySplit>,
+}
+
 /// Configuration set during contract initialization.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -164,6 +188,9 @@ pub enum DataKey {
     LendingPool,
     /// Beneficiary designated by the borrower for a given goal.
     Beneficiary(Address, Symbol),
+    /// Multi-beneficiary split list designated by the borrower for a given goal.
+    /// When present it takes precedence over the legacy single `Beneficiary` key.
+    BeneficiaryList(Address, Symbol),
     /// Last ledger at which the goal owner performed an authenticated action.
     LastOwnerActivity(Address, Symbol),
     /// Marks that a beneficiary has already claimed a given goal.
@@ -189,4 +216,30 @@ pub enum DataKey {
     /// beneficiary-attestor signer/threshold change. `0` — the deployment
     /// default — applies changes immediately, preserving existing behavior.
     AttestorChangeDelay,
+    /// Pending or resolved hardship withdrawal request, keyed by borrower and goal.
+    HardshipRequest(Address, Symbol),
+    /// Ledgers after a hardship request within which the admin must approve
+    /// it, or it expires. `0` falls back to `DEFAULT_HARDSHIP_WINDOW_LEDGERS`.
+    HardshipApprovalWindowLedgers,
+    /// Maximum cumulative principal (not accrued yield) a single
+    /// borrower/goal may withdraw penalty-free via hardship withdrawal
+    /// within one `HardshipPeriodLedgers` window. `0` disables the cap.
+    HardshipCapPerPeriod,
+    /// Length, in ledgers, of one hardship-withdrawal cap period.
+    HardshipPeriodLedgers,
+    /// Cumulative hardship principal withdrawn by a borrower/goal within a
+    /// specific period index (`current_ledger / HardshipPeriodLedgers`).
+    HardshipWithdrawnInPeriod(Address, Symbol, u32),
+}
+
+/// A borrower's hardship withdrawal request: a hash of the supporting
+/// reason/document (never the document itself), awaiting admin approval
+/// within a configurable window before it can be executed penalty-free.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HardshipWithdrawalRequest {
+    pub reason_hash: BytesN<32>,
+    pub requested_at_ledger: u32,
+    pub approved: bool,
+    pub approver: Option<Address>,
 }

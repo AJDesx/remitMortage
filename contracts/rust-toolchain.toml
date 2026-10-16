@@ -1,0 +1,8 @@
+# Pinned so the same source commit always compiles to byte-identical WASM.
+# Bump deliberately: a toolchain change alters every contract hash. See
+# docs/REPRODUCIBLE_BUILDS.md before changing this.
+[toolchain]
+channel = "1.96.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
+targets = ["wasm32v1-none"]

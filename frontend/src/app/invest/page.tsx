@@ -14,6 +14,17 @@ import { GovernanceVotingModal } from "../../components/governance/GovernanceVot
 import { SubmitProposalModal } from "../../components/governance/SubmitProposalModal";
 import { QuorumProgressBar } from "../../components/governance/QuorumProgressBar";
 import { track } from "../../lib/analytics";
+import InvestorWatchlist from "../../components/InvestorWatchlist";
+import PortfolioBreakdownChart from "../../components/PortfolioBreakdownChart";
+import InvestorRebalancingSuggestions from "../../components/investor/InvestorRebalancingSuggestions";
+import { computeConcentrationMetrics, type TrancheHolding } from "../../lib/investorRebalancing";
+import { useImpersonation } from "../../hooks/useImpersonation";
+import {
+  LoadingRegion,
+  PoolOverviewSkeleton,
+  SkeletonTable,
+} from "../../components/skeleton/Skeleton";
+import { POOL_OVERVIEW_MIN_HEIGHT, SKELETON_LAYOUT } from "../../lib/skeleton-layout";
 
 type Tranche = "Senior" | "Junior";
 
@@ -64,7 +75,10 @@ function MetricCard({
   accent?: string;
 }) {
   return (
-    <div className="p-5 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl flex flex-col justify-between">
+    <div
+      className="p-5 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl flex flex-col justify-between"
+      style={{ minHeight: SKELETON_LAYOUT.statCard }}
+    >
       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">{label}</p>
       <p
         className="text-2xl font-extrabold text-white font-mono"
@@ -105,6 +119,8 @@ export default function InvestPage() {
 
 function InvestPageInner() {
   const { publicKey, isConnected, connect } = useWallet();
+  const { status: impersonationStatus } = useImpersonation();
+  const isReadOnly = impersonationStatus.active;
 
   useEffect(() => {
     if (isConnected) track("portfolio_viewed");
@@ -190,6 +206,11 @@ function InvestPageInner() {
     setDepositError(null);
     setDepositSuccess(false);
 
+    if (isReadOnly) {
+      setDepositError("Deposits are disabled while viewing this account read-only.");
+      return;
+    }
+
     const amount = parseFloat(depositAmount);
     if (isNaN(amount) || amount <= 0) {
       setDepositError("Enter a valid positive USDC amount.");
@@ -247,6 +268,11 @@ function InvestPageInner() {
   async function handleWithdraw() {
     setWithdrawError(null);
 
+    if (isReadOnly) {
+      setWithdrawError("Withdrawals are disabled while viewing this account read-only.");
+      return;
+    }
+
     if (!position || parseFloat(position.deposited) <= 0) {
       setWithdrawError("No balance to withdraw.");
       return;
@@ -286,6 +312,17 @@ function InvestPageInner() {
     poolRates?.juniorApyBps ??
     (metrics ? Math.max(0, Math.round(metrics.estimatedApyBps * 2 - seniorApyBps)) : 0);
 
+  const userHoldings: TrancheHolding[] =
+    position && position.tranche && parseFloat(position.deposited) > 0
+      ? [{ tranche: position.tranche, amount: parseFloat(position.deposited) }]
+      : [];
+
+  const concentrationAnalysis = computeConcentrationMetrics(
+    userHoldings,
+    0.7,
+    { seniorApyBps, juniorApyBps }
+  );
+
   return (
     <div className="rm-app-page rm-invest-page min-h-screen bg-[#060913] text-slate-100 pb-20">
       <Navbar />
@@ -309,9 +346,12 @@ function InvestPageInner() {
           <h2 className="text-lg font-bold text-white mb-4">Pool Overview</h2>
 
           {loadingMetrics && (
-            <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl text-sm text-slate-400">
-              Loading pool metrics…
-            </div>
+            <LoadingRegion
+              loading
+              label="Loading pool metrics"
+              skeleton={<PoolOverviewSkeleton />}
+              minHeight={POOL_OVERVIEW_MIN_HEIGHT}
+            />
           )}
 
           {metricsError && (
@@ -348,7 +388,10 @@ function InvestPageInner() {
               </div>
 
               {/* Health Indicators */}
-              <div className="p-6 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl space-y-5">
+              <div
+                className="p-6 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl space-y-5"
+                style={{ minHeight: SKELETON_LAYOUT.summaryPanel }}
+              >
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
                   Pool Health & Liquidity Split
                 </h3>
@@ -392,6 +435,17 @@ function InvestPageInner() {
             </>
           )}
         </section>
+
+        {/* Auto-Diversification Rebalancing Suggestion */}
+        <InvestorRebalancingSuggestions
+          analysis={concentrationAnalysis}
+          onSelectTranche={(t, amt) => {
+            setSelectedTranche(t);
+            if (amt) {
+              setDepositAmount(String(amt));
+            }
+          }}
+        />
 
         <div className="grid md:grid-cols-2 gap-6">
           {/* Deposit Form */}
@@ -486,11 +540,16 @@ function InvestPageInner() {
                       Deposit submitted successfully.
                     </p>
                   )}
+                  {isReadOnly && (
+                    <p className="text-xs text-rose-400">
+                      Deposits are disabled while viewing this account read-only.
+                    </p>
+                  )}
 
                   <button
                     type="submit"
-                    disabled={depositing}
-                    className="btn-cta w-full justify-center py-3"
+                    disabled={depositing || isReadOnly}
+                    className="btn-cta w-full justify-center py-3 disabled:opacity-40"
                   >
                     {depositing
                       ? "Signing Transaction..."
@@ -590,9 +649,14 @@ function InvestPageInner() {
               {isConnected && position && (
                 <div className="pt-4 border-t border-slate-800 mt-6">
                   {withdrawError && <p className="text-xs text-red-400 mb-2">{withdrawError}</p>}
+                  {isReadOnly && (
+                    <p className="text-xs text-rose-400 mb-2">
+                      Withdrawals are disabled while viewing this account read-only.
+                    </p>
+                  )}
                   <button
                     onClick={handleWithdraw}
-                    disabled={withdrawing || parseFloat(position.deposited) <= 0}
+                    disabled={withdrawing || isReadOnly || parseFloat(position.deposited) <= 0}
                     className="btn-outline w-full justify-center text-xs py-2.5 disabled:opacity-40"
                   >
                     {withdrawing ? "Processing…" : "Withdraw Liquidity"}
@@ -602,6 +666,9 @@ function InvestPageInner() {
             </div>
           </section>
         </div>
+
+        {/* Watchlist: upcoming offerings, distinct from active holdings */}
+        <InvestorWatchlist />
 
         {/* Governance Section */}
         <section className="mb-10 mt-10">
@@ -616,9 +683,11 @@ function InvestPageInner() {
           </div>
           
           {loadingProposals ? (
-            <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl text-sm text-slate-400 animate-pulse">
-              Loading active proposals...
-            </div>
+            <LoadingRegion
+              loading
+              label="Loading active proposals"
+              skeleton={<SkeletonTable rows={3} />}
+            />
           ) : proposalsError ? (
             <div className="p-4 bg-red-500/10 text-red-300 border border-red-500/20 rounded-2xl text-sm">
               Failed to load proposals.
@@ -680,6 +749,15 @@ function InvestPageInner() {
           onCancel={() => setShowAutoReinvestModal(false)}
         />
 
+
+        {isConnected && publicKey && position && parseFloat(position.deposited) > 0 && (
+          <section className="mt-10">
+            <PortfolioBreakdownChart
+              wallet={publicKey}
+              totalDeposited={parseFloat(position.deposited)}
+            />
+          </section>
+        )}
 
         {isConnected && publicKey && position && parseFloat(position.deposited) > 0 && (
           <ROIProjectionWidget

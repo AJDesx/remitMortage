@@ -22,6 +22,9 @@ on:
           - staging
           - production
 
+permissions:
+  contents: read
+
 env:
   TF_IN_AUTOMATION: "true"
   # Prevents interactive prompts in any terraform sub-command
@@ -32,6 +35,9 @@ jobs:
   drift-main:
     name: Drift Check — ${{ matrix.environment }} (devops/)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     # Run all three unless the caller pinned a specific environment
     if: >
       github.event_name == 'schedule' ||
@@ -47,15 +53,14 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: "~1.9"
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -99,7 +104,7 @@ jobs:
 
       - name: Upload Plan Output
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tf-plan-main-${{ matrix.environment }}
           path: ${{ env.TF_WORKSPACE_DIR }}/plan-${{ matrix.environment }}.txt
@@ -126,7 +131,7 @@ jobs:
 
       - name: Open GitHub Issue on Drift
         if: steps.plan.outputs.drift_detected == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const env = '${{ matrix.environment }}';
@@ -163,6 +168,9 @@ jobs:
   drift-multiregion:
     name: Drift Check — multi-region (devops/terraform/)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     if: >
       github.event_name == 'schedule' ||
       github.event.inputs.environment == '' ||
@@ -173,15 +181,14 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: "~1.9"
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -218,7 +225,7 @@ jobs:
 
       - name: Upload Plan Output
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tf-plan-multiregion
           path: ${{ env.TF_WORKSPACE_DIR }}/plan-multiregion.txt
@@ -242,7 +249,7 @@ jobs:
 
       - name: Open GitHub Issue on Drift
         if: steps.plan.outputs.drift_detected == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;

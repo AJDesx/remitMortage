@@ -69,6 +69,30 @@ pub struct BridgeState {
     pub total_burned: i128,
 }
 
+/// One source chain's rolling daily mint-volume window (issue #858).
+/// `window_start` is a ledger timestamp (seconds); the window rolls over —
+/// resetting `volume` to 0 — the next time a mint is checked after
+/// `window_start + DAILY_CAP_WINDOW_SECONDS` has elapsed, rather than on a
+/// fixed wall-clock boundary.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChainVolumeWindow {
+    pub window_start: u64,
+    pub volume: i128,
+}
+
+/// A proposed daily-cap increase awaiting its timelock (issue #858).
+/// `execute_after` is a ledger sequence number, mirroring the
+/// propose/execute timelock pattern used elsewhere in this workspace (e.g.
+/// escrow's `PendingPenaltyProposal`). Only raising an existing cap is
+/// timelocked — see `StellarBridgeAdapter::set_daily_cap`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingCapIncrease {
+    pub new_cap: i128,
+    pub execute_after: u32,
+}
+
 /// Asset information for cross-chain transfers.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
