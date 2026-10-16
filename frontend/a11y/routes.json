@@ -1,0 +1,43 @@
+{
+  "_comment": "Every page.tsx under src/app must appear in `routes` (scanned by axe in CI) or in `excluded` with a reason. Dynamic segments need a concrete sample `url`. Enforced by __tests__/a11y-route-coverage.test.ts.",
+  "routes": [
+    { "route": "/", "url": "/" },
+    { "route": "/admin", "url": "/admin" },
+    { "route": "/analytics", "url": "/analytics" },
+    { "route": "/application", "url": "/application" },
+    { "route": "/contractor", "url": "/contractor" },
+    { "route": "/contractor/onboarding", "url": "/contractor/onboarding" },
+    { "route": "/contractor/payout-history", "url": "/contractor/payout-history" },
+    { "route": "/contractor/payouts", "url": "/contractor/payouts" },
+    { "route": "/dashboard", "url": "/dashboard" },
+    { "route": "/developer-playground", "url": "/developer-playground" },
+    {
+      "route": "/explorer/tx/[hash]",
+      "url": "/explorer/tx/0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    { "route": "/gas-optimization", "url": "/gas-optimization" },
+    { "route": "/governance", "url": "/governance" },
+    { "route": "/help", "url": "/help" },
+    { "route": "/help/articles/[slug]", "url": "/help/articles/apply-for-a-loan" },
+    { "route": "/history", "url": "/history" },
+    { "route": "/identity", "url": "/identity" },
+    { "route": "/internal/email-preview", "url": "/internal/email-preview" },
+    { "route": "/invest", "url": "/invest" },
+    { "route": "/multisig", "url": "/multisig" },
+    { "route": "/onboarding", "url": "/onboarding" },
+    { "route": "/protocol", "url": "/protocol" },
+    { "route": "/recurring", "url": "/recurring" },
+    { "route": "/repay", "url": "/repay" },
+    { "route": "/settings", "url": "/settings" },
+    { "route": "/share/[id]", "url": "/share/sample-share-id" },
+    { "route": "/statements/annual-interest", "url": "/statements/annual-interest" },
+    { "route": "/stats", "url": "/stats" },
+    {
+      "route": "/tx/[hash]",
+      "url": "/tx/0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    { "route": "/unauthorized", "url": "/unauthorized" },
+    { "route": "/verify", "url": "/verify" }
+  ],
+  "excluded": []
+}

@@ -70,6 +70,14 @@ Ensures every `backend/src`, `frontend/src`, and `contracts/*/src` source file c
   // SPDX-License-Identifier: MIT
   ```
 
+### 6. Reproducible Builds (`scripts/reproducible-build.sh`, `scripts/verify-deployed-contract.sh`)
+
+Builds each contract from a clean `git archive` of a commit with a pinned toolchain so the same commit yields byte-identical WASM, and verifies a deployed contract against its source commit. CI (`.github/workflows/reproducible-build.yml`) builds twice and fails on any hash difference.
+
+- **Build:** `scripts/reproducible-build.sh --commit <sha> --out dist/reproducible`
+- **Verify a deployment:** `scripts/verify-deployed-contract.sh --contract escrow --commit <sha> --contract-id <C...> --network testnet`
+- **Details:** [`docs/REPRODUCIBLE_BUILDS.md`](../docs/REPRODUCIBLE_BUILDS.md)
+
 ## Execution Walkthrough
 
 To perform a clean build, deploy, initialize, and test the contracts from scratch:
