@@ -2,10 +2,10 @@
   "version": 1,
   "description": "Frontend consumer expectations for endpoints used by the application UI.",
   "endpoints": [
-    { "method": "get", "path": "/api/analytics/overview", "responses": [200], "consumer": "frontend/src/app/analytics/page.tsx" },
-    { "method": "post", "path": "/api/verification/check", "responses": [200, 400], "consumer": "frontend/src/app/verify/page.tsx" },
-    { "method": "post", "path": "/api/verification/challenge", "responses": [200, 400], "consumer": "frontend/src/components/onboarding/OnboardingWizard.tsx" },
-    { "method": "post", "path": "/api/kyc/{address}/upload", "responses": [201, 400, 403], "consumer": "frontend/src/components/onboarding/DocumentChecklist.tsx" },
-    { "method": "post", "path": "/api/admin/loans/bulk-review", "responses": [200, 400], "consumer": "frontend/src/app/admin/page.tsx" }
+    { "method": "get", "path": "/api/analytics/overview", "successStatus": 200, "requiredFields": ["tvl", "totalBorrowers", "totalInvestors", "totalLoans"], "responses": [200], "consumer": "frontend/src/app/analytics/page.tsx" },
+    { "method": "post", "path": "/api/verification/check", "successStatus": 200, "requiredFields": ["senderAddress", "recipientAddress", "totalPayments", "eligible", "reportId", "generatedAt", "reportHash"], "responses": [200, 400], "consumer": "frontend/src/app/verify/page.tsx" },
+    { "method": "post", "path": "/api/verification/challenge", "successStatus": 200, "requiredFields": ["challenge"], "responses": [200, 400], "consumer": "frontend/src/components/onboarding/OnboardingWizard.tsx" },
+    { "method": "post", "path": "/api/kyc/{address}/upload", "successStatus": 201, "requiredFields": ["documentId", "uploadedAt", "scanStatus", "ocr"], "responses": [201, 400, 403], "consumer": "frontend/src/components/onboarding/DocumentChecklist.tsx" },
+    { "method": "post", "path": "/api/admin/loans/bulk-review", "successStatus": 200, "requiredFields": ["processed", "failed", "results", "failures"], "responses": [200, 400], "consumer": "frontend/src/app/admin/page.tsx" }
   ]
 }
