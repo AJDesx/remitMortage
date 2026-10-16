@@ -89,6 +89,26 @@ export async function authMiddleware(req: AuthenticatedRequest, res: Response, n
   }
 }
 
+/** Populate a verified wallet identity when present, without requiring login. */
+export function optionalAuthMiddleware(
+  req: AuthenticatedRequest,
+  _res: Response,
+  next: NextFunction
+) {
+  const authHeader = req.headers.authorization;
+  const token =
+    req.cookies?.token ||
+    (authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined);
+  if (token) {
+    try {
+      req.user = verifySessionToken(token) as AuthenticatedRequest["user"];
+    } catch {
+      // Public endpoints remain available to anonymous callers.
+    }
+  }
+  next();
+}
+
 /**
  * Gates admin-only routes (e.g. the audit log query endpoint) behind a static
  * API key, kept separate from the wallet-based JWT flow in {@link authMiddleware}.

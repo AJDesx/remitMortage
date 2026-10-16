@@ -62,7 +62,8 @@ import { correlationId } from "./middleware/correlationId.js";
 import { tenantContext } from "./services/tenant.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
 import { tracingMiddleware } from "./middleware/tracingMiddleware.js";
-import { authMiddleware } from "./middleware/auth.js";
+import { authMiddleware, optionalAuthMiddleware } from "./middleware/auth.js";
+import { readYourWritesMiddleware } from "./middleware/readYourWrites.js";
 import { credentialStuffingGuard } from "./middleware/credentialStuffing.js";
 import { rlsMiddleware } from "./middleware/rls.js";
 import { startEventIndexer } from "./services/eventIndexer.js";
@@ -268,24 +269,24 @@ app.use("/api/health/rpc", rpcHealthRouter);
 app.use("/api/health", healthRouter);
 app.use("/api/verification", verificationLimiter, verificationRouter);
 app.use("/api/verify", verificationLimiter, verifyRouter);
-app.use("/api/borrower", mutationRateLimiter, authMiddleware, borrowerRouter);
-app.use("/api/borrower", mutationRateLimiter, authMiddleware, feeWaiverBorrowerRouter);
-app.use("/api/loan", mutationRateLimiter, authMiddleware, loanRouter);
-app.use("/api/loan", mutationRateLimiter, authMiddleware, feeWaiverLoanRouter);
-app.use("/api/loan/import", mutationRateLimiter, authMiddleware, loanImportRouter);
+app.use("/api/borrower", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, borrowerRouter);
+app.use("/api/borrower", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, feeWaiverBorrowerRouter);
+app.use("/api/loan", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, loanRouter);
+app.use("/api/loan", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, feeWaiverLoanRouter);
+app.use("/api/loan/import", mutationRateLimiter, authMiddleware, readYourWritesMiddleware, loanImportRouter);
 app.use("/api/milestone", mutationRateLimiter, milestoneRouter);
-app.use("/api/analytics", analyticsRouter);
+app.use("/api/analytics", optionalAuthMiddleware, readYourWritesMiddleware, analyticsRouter);
 app.use("/api/did", sensitiveRateLimiter, didRouter);
 // kycRouter applies its own per-route auth (borrower wallet auth on upload,
 // operator API key on token issuance/decryption), so it is mounted bare.
 app.use("/api/kyc", kycRouter);
-app.use("/api/watchlist", authMiddleware, watchlistRouter);
+app.use("/api/watchlist", authMiddleware, readYourWritesMiddleware, watchlistRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/referral", referralRouter);
 app.use("/api/tenant", tenantRouter);
-app.use("/api/admin", authMiddleware, adminRouter);
-app.use("/api/admin", authMiddleware, feeWaiverAdminRouter);
-app.use("/api/admin", authMiddleware, rateSheetAdminRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, adminRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, feeWaiverAdminRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, rateSheetAdminRouter);
 app.use("/api/admin", adminAuthRouter);
 // Bare (no outer authMiddleware): impersonation/start and /end authenticate
 // via the admin's own token through requireAdmin regardless of whether an

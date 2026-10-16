@@ -23,6 +23,7 @@ import {
   getReadReplicaLagSeconds,
   READ_REPLICA_LAG_THRESHOLD_SECONDS,
 } from "./db.js";
+import { shouldReadFromPrimary } from "./readYourWrites.js";
 
 // ── Money helpers ──────────────────────────────────────────────────────────
 
@@ -389,7 +390,8 @@ export function getMonthlyVolume(months: number, deps?: AnalyticsDeps): MonthlyV
 
 async function withReadReplicaRouting<T>(
   primaryQuery: () => Promise<T>,
-  replicaQuery: () => Promise<T>
+  replicaQuery: () => Promise<T>,
+  sessionId?: string
 ): Promise<T> {
   const replicaClient = readReplicaPrisma as any;
   if (!replicaClient || replicaClient === prisma) {
@@ -397,6 +399,9 @@ async function withReadReplicaRouting<T>(
   }
 
   const lagSeconds = await getReadReplicaLagSeconds();
+  if (await shouldReadFromPrimary(sessionId, lagSeconds)) {
+    return primaryQuery();
+  }
   if (lagSeconds !== null && lagSeconds > READ_REPLICA_LAG_THRESHOLD_SECONDS) {
     return primaryQuery();
   }
@@ -438,7 +443,7 @@ interface MonthlyVolumeRow {
  * Attempts to read protocol overview from the materialized view.
  * Returns null if the view is not available (e.g. migration not yet applied).
  */
-export async function getProtocolOverviewFromView(): Promise<ProtocolOverview | null> {
+export async function getProtocolOverviewFromView(sessionId?: string): Promise<ProtocolOverview | null> {
   try {
     return await withReadReplicaRouting(
       async () => {
@@ -488,7 +493,8 @@ export async function getProtocolOverviewFromView(): Promise<ProtocolOverview | 
           totalInvestors: 0,
           totalLoans: row.total_loans,
         };
-      }
+      },
+      sessionId
     );
   } catch {
     return null;
@@ -499,7 +505,7 @@ export async function getProtocolOverviewFromView(): Promise<ProtocolOverview | 
  * Attempts to read loan performance from the materialized view.
  * Returns null if the view is not available.
  */
-export async function getLoanPerformanceFromView(): Promise<LoanPerformance | null> {
+export async function getLoanPerformanceFromView(sessionId?: string): Promise<LoanPerformance | null> {
   try {
     return await withReadReplicaRouting(
       async () => {
@@ -553,7 +559,8 @@ export async function getLoanPerformanceFromView(): Promise<LoanPerformance | nu
           defaultRate: concluded > 0 ? Math.round((defaulted / concluded) * 10000) / 100 : 0,
           onTimePaymentPercentage: 0,
         };
-      }
+      },
+      sessionId
     );
   } catch {
     return null;
@@ -564,7 +571,7 @@ export async function getLoanPerformanceFromView(): Promise<LoanPerformance | nu
  * Attempts to read disbursement progress from the materialized view.
  * Returns null if the view is not available.
  */
-export async function getDisbursementProgressFromView(): Promise<DisbursementProgress | null> {
+export async function getDisbursementProgressFromView(sessionId?: string): Promise<DisbursementProgress | null> {
   try {
     return await withReadReplicaRouting(
       async () => {
@@ -606,7 +613,8 @@ export async function getDisbursementProgressFromView(): Promise<DisbursementPro
           milestonesPending: row.milestones_pending,
           averageMilestoneCompletionMs: 0,
         };
-      }
+      },
+      sessionId
     );
   } catch {
     return null;
@@ -617,7 +625,7 @@ export async function getDisbursementProgressFromView(): Promise<DisbursementPro
  * Attempts to read monthly volume from the materialized view.
  * Returns null if the view is not available.
  */
-export async function getMonthlyVolumeFromView(months: number): Promise<MonthlyVolumePoint[] | null> {
+export async function getMonthlyVolumeFromView(months: number, sessionId?: string): Promise<MonthlyVolumePoint[] | null> {
   try {
     return await withReadReplicaRouting(
       async () => {
@@ -659,7 +667,8 @@ export async function getMonthlyVolumeFromView(months: number): Promise<MonthlyV
           repayments: row.repayments,
           disbursements: row.disbursements,
         }));
-      }
+      },
+      sessionId
     );
   } catch {
     return null;
