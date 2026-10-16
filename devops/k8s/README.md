@@ -13,6 +13,8 @@ horizontal pod autoscaling.
 | `backend-canary-service.yaml` | ClusterIP Service fronting canary backend pods |
 | `backend-canary-ingress.yaml` | Nginx Ingress annotations for weighted traffic splitting (5% / 25% / 100%) |
 | `backend-hpa.yaml` | HorizontalPodAutoscaler: 2–10 replicas, scale at 80% CPU and 85% Memory |
+| `frontend-deployment.yaml` | Frontend Deployment (zone/node spread, anti-affinity) |
+| `pod-disruption-budgets.yaml` | PodDisruptionBudgets for backend (incl. in-process queue workers) and frontend — see [docs/POD_DISRUPTION_BUDGETS.md](../../docs/POD_DISRUPTION_BUDGETS.md) |
 | `loadtest-job.yaml` | Job that generates mock request load to verify scale-up |
 | `worker-scaledobject.yaml` | KEDA Redis queue-depth scaler for notifications, webhooks, and analytics |
 | `policy/verify-image-signatures.yaml` | Kyverno admission policy for signed images and SPDX attestations |

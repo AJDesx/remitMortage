@@ -36,6 +36,28 @@ route:
       repeat_interval: 15m
       continue: true
 
+    # Falco runtime detections (via falcosidekick). Only CRITICAL rules page
+    # (shell in a prod container, sensitive file read); ERROR/WARNING go to
+    # Slack only. Known-benign activity is excluded in Falco itself
+    # (devops/falco/exceptions.yaml) so it never reaches this route.
+    - match:
+        source: falco
+        severity: critical
+      receiver: pagerduty-critical
+      group_by: ["rule", "k8s_pod_name"]
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+      continue: true
+
+    - match:
+        source: falco
+      receiver: slack-ops
+      group_by: ["rule", "k8s_pod_name"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
     # SLO slow burns → lower-severity ticket (see slo-burn-rate-alerts.yml).
     # Fast burns use severity "page" and are routed to PagerDuty above.
     - match:

@@ -828,6 +828,15 @@ body {
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.6s ease-in-out infinite;
 }
+/* Fade automatic (scheduled/system) theme switches; skipped under reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  html.theme-transition,
+  html.theme-transition *,
+  html.theme-transition *::before,
+  html.theme-transition *::after {
+    transition: background-color 0.35s ease, color 0.35s ease, border-color 0.35s ease !important;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .skeleton {
     animation: none;

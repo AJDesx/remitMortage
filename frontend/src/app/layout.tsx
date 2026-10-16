@@ -6,6 +6,7 @@ import { WalletProvider } from "../context/WalletContext";
 import "./globals.css";
 import { ContractRegistryProvider } from "@/context/ContractRegistryContext";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { THEME_BOOT_SCRIPT } from "@/app/lib/theme-boot";
 import { AuthProvider } from "@/context/AuthContext";
 import { NotificationProvider } from "@/context/NotificationContext";
 import { NotificationLayer } from "@/components/NotificationLayer";
@@ -105,24 +106,11 @@ export default async function RootLayout({
     <html lang={locale} dir={locale === "ar" ? "rtl" : "ltr"} suppressHydrationWarning>
       <head>
         {/* SRI: This inline theme script is same-origin and not a CDN load, so Subresource Integrity does not apply.
-            It is intentionally inline to avoid FOUC and is protected by CSP script-src 'self'.
+            It resolves System / Scheduled / Manual mode before first paint (see lib/theme-boot.ts) and is intentionally inline to avoid FOUC and is protected by CSP script-src 'self'.
             For any future third-party CDN <script src="https://..."> or <link rel="stylesheet" href="https://...">,
             use `import { sriProps } from "@/lib/sri"` and spread `{...sriProps(url)}` to enforce
             integrity="sha384-..." + crossorigin="anonymous". See frontend/src/lib/sri.ts and docs/SRI_AUDIT.md. */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              (function() {
-                try {
-                  var theme = localStorage.getItem("remitmortgage-theme");
-                  if (theme === "light" || theme === "dark") {
-                    document.documentElement.setAttribute("data-theme", theme);
-                  }
-                } catch (e) {}
-              })();
-            `,
-          }}
-        />
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
       </head>
       <body className="min-h-screen bg-[#060913] text-slate-100 font-sans antialiased flex flex-col justify-between">
         <SkipToContent />

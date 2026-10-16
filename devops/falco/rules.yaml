@@ -1,0 +1,66 @@
+# RemitMortgage runtime threat-detection rules (Falco). See docs/FALCO_RUNTIME_DETECTION.md.
+# Loaded AFTER the stock falco_rules.yaml, so the stock macros (container,
+# spawned_process, shell_procs, open_read, ...) are available.
+
+- macro: remitmortgage_prod_container
+  condition: >
+    container and k8s.ns.name = "remitmortgage"
+
+- list: rm_sensitive_paths
+  items: [/etc/shadow, /etc/sudoers, /root/.ssh/id_rsa, /root/.ssh/id_ed25519, /var/run/secrets/kubernetes.io/serviceaccount/token]
+
+- list: rm_allowed_egress_ports
+  items: [53, 80, 443, 5432, 6379]
+
+# RFC1918 + loopback + link-local. Outbound to these is cluster-internal.
+- macro: rm_private_dest
+  condition: >
+    (fd.snet in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16"))
+
+- rule: Shell Spawned in RemitMortgage Production Container
+  desc: An interactive shell was started inside a production container (kubectl exec / reverse shell).
+  condition: >
+    spawned_process and remitmortgage_prod_container and shell_procs and proc.tty != 0
+  output: >
+    Interactive shell in production container (user=%user.name shell=%proc.name cmdline=%proc.cmdline
+    pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name image=%container.image.repository)
+  priority: CRITICAL
+  exceptions:
+    - name: known_benign_shell
+      fields: [k8s.ns.name, k8s.pod.name]
+      comps: ["=", "startswith"]
+      values: []
+  tags: [remitmortgage, runtime, shell, mitre_execution]
+
+- rule: Unexpected Outbound Connection from RemitMortgage Container
+  desc: A production container opened an outbound connection to a public address on a port outside the allowlist.
+  condition: >
+    evt.type = connect and evt.dir = < and remitmortgage_prod_container
+    and fd.typechar = 4 and not rm_private_dest
+    and not fd.sport in (rm_allowed_egress_ports)
+  output: >
+    Unexpected outbound connection (command=%proc.cmdline dest=%fd.sip:%fd.sport
+    pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name image=%container.image.repository)
+  priority: ERROR
+  exceptions:
+    - name: known_benign_egress
+      fields: [container.image.repository, fd.sip]
+      comps: ["=", "="]
+      values: []
+  tags: [remitmortgage, runtime, network, mitre_exfiltration]
+
+- rule: Sensitive File Read in RemitMortgage Container
+  desc: A process read a credential or secret file that the application never needs to open.
+  condition: >
+    open_read and remitmortgage_prod_container and fd.name in (rm_sensitive_paths)
+    and not (proc.name = "node" and fd.name startswith /var/run/secrets/kubernetes.io/)
+  output: >
+    Sensitive file read (file=%fd.name command=%proc.cmdline user=%user.name
+    pod=%k8s.pod.name ns=%k8s.ns.name container=%container.name image=%container.image.repository)
+  priority: CRITICAL
+  exceptions:
+    - name: known_benign_file_read
+      fields: [proc.name, fd.name]
+      comps: ["=", "="]
+      values: []
+  tags: [remitmortgage, runtime, filesystem, mitre_credential_access]

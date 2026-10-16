@@ -15,6 +15,30 @@ spec:
       labels:
         app: remitmortgage-backend
     spec:
+      # Spread replicas across zones (hard) and nodes (soft) so a zone outage
+      # or a single node drain cannot take every replica down at once.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: remitmortgage-backend
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: remitmortgage-backend
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: remitmortgage-backend
       containers:
         - name: backend
           image: remitmortgage/backend:latest

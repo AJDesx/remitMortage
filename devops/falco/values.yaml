@@ -1,0 +1,29 @@
+# Helm values for the falcosecurity/falco chart (pin the chart version in the
+# deploy command). Install:
+#   helm upgrade --install falco falcosecurity/falco -n falco --create-namespace \
+#     --version 4.8.0 -f devops/falco/values.yaml \
+#     --set-file customRules."rules\.yaml"=devops/falco/rules.yaml \
+#     --set-file customRules."exceptions\.yaml"=devops/falco/exceptions.yaml
+driver:
+  kind: modern_ebpf
+
+tty: true
+
+falco:
+  json_output: true
+  priority: warning
+  rules_files:
+    - /etc/falco/falco_rules.yaml
+    - /etc/falco/rules.d
+
+# Forward alerts to falcosidekick, which pushes them to Alertmanager.
+falcosidekick:
+  enabled: true
+  config:
+    minimumpriority: warning
+    alertmanager:
+      hostport: http://alertmanager.monitoring.svc:9093
+      minimumpriority: warning
+      # Becomes Alertmanager labels so routing can key off severity.
+      customseveritymap: "critical:critical,error:warning,warning:warning"
+    customfields: "source:falco"

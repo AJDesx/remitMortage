@@ -1,0 +1,31 @@
+# Limit voluntary disruption (node drains, cluster upgrades, autoscaler
+# scale-down). "50%" rounds up, so 2 replicas -> 1 must stay available and
+# 10 replicas -> 5. Evictions that would breach the budget are refused.
+#
+# The queue workers (notifications, webhooks, analytics) run inside the
+# backend pods and are scaled by KEDA (worker-scaledobject.yaml), so the
+# backend budget is also the workers' budget. A second PDB on the same pods
+# would make the eviction API return 500, so there is deliberately only one.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: remitmortgage-backend
+  labels:
+    app: remitmortgage-backend
+spec:
+  minAvailable: 50%
+  selector:
+    matchLabels:
+      app: remitmortgage-backend
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: remitmortgage-frontend
+  labels:
+    app: remitmortgage-frontend
+spec:
+  minAvailable: 50%
+  selector:
+    matchLabels:
+      app: remitmortgage-frontend

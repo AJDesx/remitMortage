@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { getProductTourStore } from "@/hooks/useProductTourState";
 import { useThemeStore } from "@/app/stores/useThemeStore";
+import ThemeModeSettings from "@/components/ThemeModeSettings";
 import NotificationFrequencyControl, {
   type NotificationFrequency,
 } from "@/components/NotificationFrequencyControl";
@@ -736,7 +737,9 @@ export default function SettingsPage() {
                     </p>
                   </div>
 
-                  {/* Theme: Light / Dark */}
+                  <ThemeModeSettings />
+
+                  {/* Theme: Light / Dark (picking one switches to Manual mode) */}
                   <div className="space-y-3">
                     <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400">Color Theme</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
