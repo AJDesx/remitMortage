@@ -1,0 +1,223 @@
+{
+  "contract": "escrow",
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "Initial baseline"
+    }
+  ],
+  "events": {
+    "auto_cfg": [
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "amount",
+          "interval_ledgers"
+        ]
+      }
+    ],
+    "auto_cxl": [
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "value",
+        "data": [
+          "borrower"
+        ]
+      }
+    ],
+    "auto_dep": [
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "amount",
+          "deposited"
+        ]
+      }
+    ],
+    "ben_claim": [
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "beneficiary",
+          "total_amount"
+        ]
+      }
+    ],
+    "ben_list": [
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "list.splits.len()"
+        ]
+      },
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "0u32"
+        ]
+      }
+    ],
+    "benefic": [
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "beneficiary"
+        ]
+      }
+    ],
+    "deposit": [
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "amount + matched",
+          "deposited"
+        ]
+      }
+    ],
+    "goal_xfer": [
+      {
+        "topicArgs": [
+          "from_goal_id",
+          "to_goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "amount",
+          "preserved_start"
+        ]
+      }
+    ],
+    "pen_prop": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "tier1",
+          "tier2",
+          "tier3",
+          "tier4",
+          "execute_after"
+        ]
+      }
+    ],
+    "pen_upd": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "tier1",
+          "tier2",
+          "tier3",
+          "tier4"
+        ]
+      }
+    ],
+    "perm_mode": [
+      {
+        "topicArgs": [],
+        "dataKind": "value",
+        "data": [
+          "enabled"
+        ]
+      }
+    ],
+    "rollover": [
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "auto_rollover"
+        ]
+      },
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "amount_withdrawn"
+        ]
+      }
+    ],
+    "top_up": [
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "amount",
+          "deposited"
+        ]
+      }
+    ],
+    "withdraw": [
+      {
+        "topicArgs": [
+          "goal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "refund",
+          "penalty"
+        ]
+      }
+    ],
+    "wl_add": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "address"
+        ]
+      }
+    ],
+    "wl_rm": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "address"
+        ]
+      }
+    ]
+  }
+}

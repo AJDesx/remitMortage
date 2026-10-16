@@ -1,0 +1,133 @@
+{
+  "contract": "verification-registry",
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "Initial baseline"
+    }
+  ],
+  "events": {
+    "acc_adm": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "proposed"
+        ]
+      }
+    ],
+    "apl_res": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "reviewer",
+          "borrower",
+          "score_at_appeal",
+          "new_score"
+        ]
+      }
+    ],
+    "appeal": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "score",
+          "requested_ledger"
+        ]
+      }
+    ],
+    "decaycfg": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "threshold_ledgers",
+          "points_per_period",
+          "period_ledgers",
+          "min_score"
+        ]
+      }
+    ],
+    "init": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "admin"
+        ]
+      }
+    ],
+    "prop_adm": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "admin",
+          "new_admin"
+        ]
+      }
+    ],
+    "rate_cfg": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "admin",
+          "rate_excellent_bps",
+          "rate_good_bps",
+          "rate_fair_bps",
+          "rate_fallback_bps"
+        ]
+      }
+    ],
+    "risk_upd": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "borrower",
+          "old_score",
+          "score",
+          "was_on_time"
+        ]
+      }
+    ],
+    "set_lp": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "admin",
+          "lending_pool"
+        ]
+      }
+    ],
+    "set_rev": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "admin",
+          "reviewer"
+        ]
+      }
+    ],
+    "vreg": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "admin",
+          "borrower",
+          "score",
+          "verified_ledger",
+          "expiration_ledger"
+        ]
+      }
+    ]
+  }
+}

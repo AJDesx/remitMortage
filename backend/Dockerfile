@@ -4,13 +4,20 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# BuildKit cache mount: npm's download cache survives across builds but is never
+# written into an image layer. If an install ever needs a registry token, mount
+# it with `--mount=type=secret,id=npmrc,target=/root/.npmrc` — never ARG/ENV/COPY.
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev
 
 # ─── Stage 2: TypeScript build + Prisma client generation ────────────────────
 FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+# Source layers come after the dependency install, so a code-only change reuses
+# the cached node_modules layer above until package-lock.json changes.
 COPY tsconfig.json ./
 COPY prisma/ ./prisma/
 COPY src/ ./src/

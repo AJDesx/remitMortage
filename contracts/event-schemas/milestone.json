@@ -1,0 +1,116 @@
+{
+  "contract": "milestone",
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "Initial baseline"
+    }
+  ],
+  "events": {
+    "dispute/raised": [
+      {
+        "topicArgs": [
+          "\"raised\""
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "proposal_id",
+          "caller",
+          "deadline_ledger"
+        ]
+      }
+    ],
+    "dispute/resolved": [
+      {
+        "topicArgs": [
+          "\"resolved\""
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "proposal_id",
+          "uphold"
+        ]
+      }
+    ],
+    "dispute/timeout": [
+      {
+        "topicArgs": [
+          "\"timeout\""
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "proposal_id",
+          "uphold_votes",
+          "reject_votes"
+        ]
+      }
+    ],
+    "milestone/full": [
+      {
+        "topicArgs": [
+          "\"full\""
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "proposal_id",
+          "remaining"
+        ]
+      },
+      {
+        "topicArgs": [
+          "\"full\""
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "proposal_id",
+          "release_amount"
+        ]
+      }
+    ],
+    "milestone/partial": [
+      {
+        "topicArgs": [
+          "\"partial\""
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "proposal_id",
+          "release_amount",
+          "remaining_after"
+        ]
+      }
+    ],
+    "ms_bonus": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "contractor",
+          "proposal_id",
+          "bonus_amount"
+        ]
+      }
+    ],
+    "ms_rej": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "governance_signer",
+          "proposal_id"
+        ]
+      }
+    ],
+    "ms_resub": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "contractor",
+          "proposal_id"
+        ]
+      }
+    ]
+  }
+}

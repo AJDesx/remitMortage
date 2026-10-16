@@ -99,3 +99,25 @@ variable "log_retention_years" {
   type        = number
   default     = 7
 }
+
+variable "owner" {
+  description = "Team or individual accountable for these resources (required cost-allocation tag)"
+  type        = string
+  default     = "platform-team"
+
+  validation {
+    condition     = length(trimspace(var.owner)) > 0
+    error_message = "owner must not be empty."
+  }
+}
+
+variable "cost_center" {
+  description = "Cost center the spend is attributed to (required cost-allocation tag)"
+  type        = string
+  default     = "remitmortgage-core"
+
+  validation {
+    condition     = length(trimspace(var.cost_center)) > 0
+    error_message = "cost_center must not be empty."
+  }
+}
