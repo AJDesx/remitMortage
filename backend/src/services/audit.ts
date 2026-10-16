@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { prisma } from "./db.js";
+import { logAuditEvent } from "../utils/logger.js";
 
 export async function logAudit(params: {
   action: string;
@@ -9,6 +10,14 @@ export async function logAudit(params: {
   ipAddress?: string;
   metadata?: any;
 }) {
+  // Audit events are always kept by the log sampling policy (issue #875).
+  logAuditEvent("Audit event", {
+    action: params.action,
+    actorAddress: params.actorAddress,
+    ipAddress: params.ipAddress,
+    metadata: params.metadata,
+  });
+
   try {
     // Fire and forget, don't await so we don't block the request.
     // .catch handles any promise rejections so the app doesn't crash.
