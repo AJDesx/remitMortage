@@ -71,8 +71,9 @@ jobs:
 
 
   # ── Build ───────────────────────────────────────────────────────────────
-  # integration-tests is a native std-based test-only crate and can never
-  # target wasm32v1-none (which requires #![no_std]), so it's excluded here.
+  # integration-tests and budget-tests are native std-based test-only crates and
+  # can never target wasm32v1-none (which requires #![no_std]), so they're
+  # excluded here.
   build:
     name: Compile Contracts (wasm32v1-none release)
     runs-on: ubuntu-latest
@@ -91,7 +92,7 @@ jobs:
             contracts -> target
 
       - name: Build Soroban Contracts (release WASM)
-        run: cargo build --target wasm32v1-none --release --workspace --exclude integration-tests
+        run: cargo build --target wasm32v1-none --release --workspace --exclude integration-tests --exclude budget-tests
         working-directory: contracts
 
       - name: Upload Compiled WASM Artifacts

@@ -228,6 +228,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "budget-tests"
+version = "0.1.0"
+dependencies = [
+ "bridge-adapter",
+ "escrow",
+ "governance",
+ "insurance-pool",
+ "lending-pool",
+ "milestone",
+ "multisig-validator",
+ "oracle-price",
+ "serde_json",
+ "soroban-sdk",
+ "staking-pool",
+ "verification-registry",
+ "yield-vault",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

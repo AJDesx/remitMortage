@@ -19,6 +19,12 @@ import PortfolioBreakdownChart from "../../components/PortfolioBreakdownChart";
 import InvestorRebalancingSuggestions from "../../components/investor/InvestorRebalancingSuggestions";
 import { computeConcentrationMetrics, type TrancheHolding } from "../../lib/investorRebalancing";
 import { useImpersonation } from "../../hooks/useImpersonation";
+import {
+  LoadingRegion,
+  PoolOverviewSkeleton,
+  SkeletonTable,
+} from "../../components/skeleton/Skeleton";
+import { POOL_OVERVIEW_MIN_HEIGHT, SKELETON_LAYOUT } from "../../lib/skeleton-layout";
 
 type Tranche = "Senior" | "Junior";
 
@@ -69,7 +75,10 @@ function MetricCard({
   accent?: string;
 }) {
   return (
-    <div className="p-5 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl flex flex-col justify-between">
+    <div
+      className="p-5 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl flex flex-col justify-between"
+      style={{ minHeight: SKELETON_LAYOUT.statCard }}
+    >
       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">{label}</p>
       <p
         className="text-2xl font-extrabold text-white font-mono"
@@ -337,9 +346,12 @@ function InvestPageInner() {
           <h2 className="text-lg font-bold text-white mb-4">Pool Overview</h2>
 
           {loadingMetrics && (
-            <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl text-sm text-slate-400">
-              Loading pool metrics…
-            </div>
+            <LoadingRegion
+              loading
+              label="Loading pool metrics"
+              skeleton={<PoolOverviewSkeleton />}
+              minHeight={POOL_OVERVIEW_MIN_HEIGHT}
+            />
           )}
 
           {metricsError && (
@@ -376,7 +388,10 @@ function InvestPageInner() {
               </div>
 
               {/* Health Indicators */}
-              <div className="p-6 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl space-y-5">
+              <div
+                className="p-6 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl space-y-5"
+                style={{ minHeight: SKELETON_LAYOUT.summaryPanel }}
+              >
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
                   Pool Health & Liquidity Split
                 </h3>
@@ -668,9 +683,11 @@ function InvestPageInner() {
           </div>
           
           {loadingProposals ? (
-            <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl text-sm text-slate-400 animate-pulse">
-              Loading active proposals...
-            </div>
+            <LoadingRegion
+              loading
+              label="Loading active proposals"
+              skeleton={<SkeletonTable rows={3} />}
+            />
           ) : proposalsError ? (
             <div className="p-4 bg-red-500/10 text-red-300 border border-red-500/20 rounded-2xl text-sm">
               Failed to load proposals.

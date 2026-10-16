@@ -4,7 +4,7 @@
 
 export const dynamic = "force-dynamic";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import loadDynamic from "next/dynamic";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
@@ -42,6 +42,9 @@ import { SortableWidget } from '../../components/dashboard/SortableWidget';
 import { WidgetSettingsModal } from '../../components/dashboard/WidgetSettingsModal';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 import { track } from "../../lib/analytics";
+import { announce } from "../../lib/announcer";
+import { DashboardSkeleton, LoadingRegion } from "../../components/skeleton/Skeleton";
+import { DASHBOARD_REGION_MIN_HEIGHT } from "../../lib/skeleton-layout";
 
 
 const Navbar = loadDynamic(() => import("../../components/Navbar"), { ssr: false });
@@ -392,6 +395,8 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const refreshFailedRef = useRef(false);
+
   const loadStatus = useCallback(
     async ({ background = false }: { background?: boolean } = {}) => {
       if (!publicKey) return;
@@ -405,6 +410,12 @@ export default function DashboardPage() {
         const data = await res.json();
         setStatus(data);
         setError(null);
+        // Background polls are silent unless they recover from a failure, so
+        // screen-reader users are not told "refreshed" every interval.
+        if (background && refreshFailedRef.current) {
+          announce("Dashboard data refreshed.");
+        }
+        refreshFailedRef.current = false;
         setMilestones(SAMPLE_MILESTONES);
         const missed = data.loan?.missedPayments ?? 0;
         setRecoveryPlan(
@@ -416,7 +427,17 @@ export default function DashboardPage() {
         );
       } catch (e: any) {
         // A failed background poll keeps the last good data on screen.
-        if (!background) setError(e?.message || "Failed to load borrower status");
+        const failure = e?.message || "Failed to load borrower status";
+        if (!background) setError(failure);
+        if (!background || !refreshFailedRef.current) {
+          announce(
+            background
+              ? "Dashboard refresh failed. Showing the last loaded data."
+              : `Failed to load dashboard. ${failure}`,
+            { priority: "assertive" }
+          );
+        }
+        refreshFailedRef.current = true;
       } finally {
         if (!background) setLoading(false);
       }
@@ -546,14 +567,6 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Loading state */}
-        {loading && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-pulse">
-            <div className="h-64 rounded-2xl bg-slate-900 border border-slate-800" />
-            <div className="h-64 rounded-2xl bg-slate-900 border border-slate-800" />
-          </div>
-        )}
-
         {/* Error state */}
         {error && (
           <div className="p-6 bg-red-500/10 text-red-300 border border-red-500/20 rounded-2xl text-sm font-medium">
@@ -561,8 +574,15 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Loaded Content */}
-        {!loading && !error && status && (
+        {/* Loading skeleton / loaded content share one reserved region */}
+        <LoadingRegion
+          loading={loading}
+          label="Loading dashboard"
+          skeleton={<DashboardSkeleton />}
+          minHeight={DASHBOARD_REGION_MIN_HEIGHT}
+          reserve={loading || (!error && !!status)}
+        >
+        {!error && status && (
           <div className="space-y-8">
             {/* Print-only loan summary */}
             <LoanPrintSummary
@@ -600,6 +620,7 @@ export default function DashboardPage() {
             </DndContext>
           </div>
         )}
+        </LoadingRegion>
 
         <ProductTour />
         <DepositModal isOpen={showDeposit} onClose={() => setShowDeposit(false)} />
