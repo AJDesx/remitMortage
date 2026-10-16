@@ -15,13 +15,33 @@ terraform {
   }
 }
 
+# Standard cost-allocation tags, applied to every taggable resource through
+# the provider so individual resources cannot forget them. Enforced in CI by
+# devops/policy/tags (see docs/COST_ALLOCATION_TAG_POLICY.md).
+locals {
+  required_tags = {
+    Service     = "indexer"
+    Environment = var.environment
+    Owner       = var.owner
+    CostCenter  = var.cost_center
+  }
+}
+
 provider "aws" {
   region = var.primary_region
+
+  default_tags {
+    tags = local.required_tags
+  }
 }
 
 provider "aws" {
   alias  = "secondary"
   region = var.secondary_region
+
+  default_tags {
+    tags = local.required_tags
+  }
 }
 
 # ─────────────────────────────────────────────────────────────────────────

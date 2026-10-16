@@ -1,0 +1,49 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "aws_vpc.main",
+      "type": "aws_vpc",
+      "name": "main",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "cidr_block": "10.0.0.0/16",
+          "tags": {
+            "Name": "vpc"
+          },
+          "tags_all": {
+            "Name": "vpc"
+          }
+        },
+        "after_unknown": {
+          "id": true
+        }
+      }
+    },
+    {
+      "address": "aws_s3_bucket.assets",
+      "type": "aws_s3_bucket",
+      "name": "assets",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "bucket": "a",
+          "tags": null,
+          "tags_all": {
+            "Service": "backend"
+          }
+        },
+        "after_unknown": {
+          "id": true
+        }
+      }
+    }
+  ]
+}
