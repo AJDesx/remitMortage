@@ -682,6 +682,24 @@ model LoanRepayment {
   @@index([ledger])
 }
 
+/// PII-minimized, versioned events waiting for delivery to the analytics
+/// warehouse. Producers insert in the same PostgreSQL transaction as source
+/// records; a relay can publish rows and set publishedAt after acknowledgement.
+model AnalyticsOutbox {
+  id            BigInt    @id @default(autoincrement())
+  eventKey      String    @unique
+  sourceTable   String
+  sourceId      String
+  eventType     String
+  schemaVersion Int       @default(1)
+  payload       Json
+  occurredAt    DateTime  @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+  publishedAt   DateTime? @db.Timestamptz(6)
+
+  @@map("AnalyticsOutbox")
+}
+
 model EventIndexerState {
   id                  String   @id @default(uuid())
   key                 String   @unique
