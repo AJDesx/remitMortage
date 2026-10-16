@@ -29,7 +29,7 @@ jobs:
     - uses: actions/checkout@v3
 
     - name: Use Node.js
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@3235b876344d2a9aa001b8d1453c930bba69e610 # v3
       with:
         node-version: '18.x'
 
@@ -61,7 +61,7 @@ jobs:
 
     - name: Upload query plan report
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: query-plan-report
         path: backend/query-plan-baselines.json
@@ -70,7 +70,7 @@ jobs:
       run: ./scripts/benchmark-contracts.sh
 
     - name: Upload Benchmark Results
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: contract-benchmarks
         path: scripts/benchmarks-current.json
