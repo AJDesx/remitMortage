@@ -10,6 +10,8 @@ import { EmptyState } from "@/components/EmptyState";
 import HelpLink from "@/components/help/HelpLink";
 import { track } from "@/lib/analytics";
 import { announce } from "@/lib/announcer";
+import { useUnsavedChangesGuard } from "@/hooks/useUnsavedChangesGuard";
+import UnsavedChangesDialog from "@/components/forms/UnsavedChangesDialog";
 
 const Navbar = dynamic(() => import("@/components/Navbar"), { ssr: false });
 
@@ -27,6 +29,11 @@ function ApplicationPageInner() {
   const [applications, setApplications] = useState<Application[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  // A typed-but-unsubmitted amount is lost on navigation; submitting clears it.
+  const { dialogProps: unsavedChangesDialog } = useUnsavedChangesGuard({
+    isDirty: amount.trim() !== "",
+  });
 
   useEffect(() => {
     if (!publicKey) return;
@@ -67,6 +74,7 @@ function ApplicationPageInner() {
   return (
     <main data-testid="loan-application-page" className="rm-app-page rm-workflow-page min-h-screen">
       <Navbar />
+      <UnsavedChangesDialog {...unsavedChangesDialog} />
       <div className="rm-workflow-shell">
         <header className="rm-workflow-header">
           <span>Borrower financing</span>

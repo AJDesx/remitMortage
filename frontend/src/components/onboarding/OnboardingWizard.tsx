@@ -8,6 +8,8 @@ import { useForm, useWatch, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { getOnboardingStore, useOnboardingState } from "@/hooks/useOnboardingState";
 import { useFormAutosave } from "@/hooks/useFormAutosave";
+import { useUnsavedChangesGuard } from "@/hooks/useUnsavedChangesGuard";
+import UnsavedChangesDialog from "@/components/forms/UnsavedChangesDialog";
 import { onboardingSchema, STEP_FIELDS, type OnboardingFormValues } from "@/lib/onboardingSchema";
 import ProgressStepper from "./ProgressStepper";
 import DocumentChecklist from "./DocumentChecklist";
@@ -62,7 +64,7 @@ export default function OnboardingWizard() {
     getValues,
     setValue,
     setFocus,
-    formState: { errors },
+    formState: { errors, isDirty },
   } = useForm<OnboardingFormValues>({
     resolver: zodResolver(onboardingSchema),
     mode: "onChange",
@@ -81,7 +83,7 @@ export default function OnboardingWizard() {
   const watchedDeposit = useWatch({ control, name: "firstDepositAmount" });
 
   // Autosave hook
-  const { hasDraft, restoreDraft, clearDraft, dismissDraft } = useFormAutosave(
+  const { hasDraft, restoreDraft, saveDraftNow, clearDraft, dismissDraft } = useFormAutosave(
     {
       recipientAddress: watchedRecipient,
       savingsTarget: watchedTarget,
@@ -101,6 +103,13 @@ export default function OnboardingWizard() {
       },
     }
   );
+
+  // Warn before the tab is closed or the page is left with unsaved edits; the
+  // dialog offers to save the autosave draft immediately.
+  const { dialogProps: unsavedChangesDialog, allowNavigation } = useUnsavedChangesGuard({
+    isDirty,
+    onSaveDraft: saveDraftNow,
+  });
 
   const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL!;
   const USDC_TOKEN_ID = process.env.NEXT_PUBLIC_USDC_TOKEN_ID!;
@@ -273,6 +282,7 @@ export default function OnboardingWizard() {
       toast.success("Loan application submitted. Redirecting to Escrow Dashboard...");
       clearDraft(); // Clear autosaved data on successful submission
       store.getState().reset();
+      await allowNavigation(); // submitted: nothing left to lose, so never prompt
       router.push("/dashboard");
     } catch (e) {
       console.error(e);
@@ -677,6 +687,7 @@ export default function OnboardingWizard() {
 
   return (
     <div className="p-6 md:p-8 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-xl w-full max-w-2xl backdrop-blur-xl flex flex-col gap-6">
+      <UnsavedChangesDialog {...unsavedChangesDialog} />
       {hasDraft && (
         <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="space-y-1">
