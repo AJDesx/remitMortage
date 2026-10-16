@@ -1,0 +1,42 @@
+{
+  "contract": "oracle-price",
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "Initial baseline"
+    }
+  ],
+  "events": {
+    "price_sub": [
+      {
+        "topicArgs": [
+          "reporter"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "price",
+          "updated_ledger"
+        ]
+      }
+    ],
+    "rep_add": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "reporter"
+        ]
+      }
+    ],
+    "rep_rm": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "reporter"
+        ]
+      }
+    ]
+  }
+}

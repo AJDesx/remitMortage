@@ -1,0 +1,55 @@
+{
+  "contract": "staking-pool",
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "Initial baseline"
+    }
+  ],
+  "events": {
+    "claim_rew": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "staker",
+          "total_claim"
+        ]
+      }
+    ],
+    "rewards": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "total_reward",
+          "total_deposits"
+        ]
+      }
+    ],
+    "stake": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "staker",
+          "token",
+          "amount",
+          "minted"
+        ]
+      }
+    ],
+    "unstake": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "staker",
+          "shares",
+          "total_withdrawn"
+        ]
+      }
+    ]
+  }
+}

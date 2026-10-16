@@ -1,0 +1,93 @@
+{
+  "contract": "yield-vault",
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "Initial baseline"
+    }
+  ],
+  "events": {
+    "deposit": [
+      {
+        "topicArgs": [
+          "from"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "amount",
+          "shares"
+        ]
+      }
+    ],
+    "harvest": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "harvested",
+          "assets_after",
+          "total_shares"
+        ]
+      }
+    ],
+    "liq_add": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "amount",
+          "new_liquidity"
+        ]
+      }
+    ],
+    "thresh": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "admin",
+          "threshold"
+        ]
+      }
+    ],
+    "w_fulfil": [
+      {
+        "topicArgs": [
+          "requester"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "id",
+          "shares",
+          "amount"
+        ]
+      }
+    ],
+    "w_queued": [
+      {
+        "topicArgs": [
+          "to"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "id",
+          "shares",
+          "amount"
+        ]
+      }
+    ],
+    "withdraw": [
+      {
+        "topicArgs": [
+          "to"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "shares",
+          "amount"
+        ]
+      }
+    ]
+  }
+}

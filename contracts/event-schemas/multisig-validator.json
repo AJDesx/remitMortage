@@ -1,0 +1,107 @@
+{
+  "contract": "multisig-validator",
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "Initial baseline"
+    }
+  ],
+  "events": {
+    "act_exec": [
+      {
+        "topicArgs": [
+          "proposal_id"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "index",
+          "action_id",
+          "label"
+        ]
+      }
+    ],
+    "mprop_exe": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "proposal_id",
+          "proposal.actions.len()"
+        ]
+      }
+    ],
+    "mprop_sub": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "proposal_id",
+          "effective_expiry",
+          "actions.len()"
+        ]
+      }
+    ],
+    "signers/add": [
+      {
+        "topicArgs": [
+          "\"add\""
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "signer",
+          "env.ledger().sequence()",
+          "env.ledger().timestamp()"
+        ]
+      }
+    ],
+    "signers/config": [
+      {
+        "topicArgs": [
+          "\"config\""
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "signers.len()",
+          "now_ledger",
+          "now_ts"
+        ]
+      }
+    ],
+    "signers/cooldown": [
+      {
+        "topicArgs": [
+          "\"cooldown\""
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "cooldown_ledgers",
+          "env.ledger().sequence()"
+        ]
+      }
+    ],
+    "signers/remove": [
+      {
+        "topicArgs": [
+          "\"remove\""
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "signer",
+          "env.ledger().sequence()",
+          "env.ledger().timestamp()"
+        ]
+      }
+    ],
+    "submitted": [
+      {
+        "topicArgs": [],
+        "dataKind": "tuple",
+        "data": [
+          "proposal_id",
+          "effective_expiry"
+        ]
+      }
+    ]
+  }
+}

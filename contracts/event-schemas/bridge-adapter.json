@@ -1,0 +1,83 @@
+{
+  "contract": "bridge-adapter",
+  "schemaVersion": 1,
+  "changes": [
+    {
+      "version": 1,
+      "summary": "Initial baseline"
+    }
+  ],
+  "events": {
+    "cap_full": [
+      {
+        "topicArgs": [
+          "source_chain"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "projected",
+          "cap"
+        ]
+      }
+    ],
+    "cap_prop": [
+      {
+        "topicArgs": [
+          "source_chain"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "new_cap",
+          "execute_after"
+        ]
+      }
+    ],
+    "cap_rej": [
+      {
+        "topicArgs": [
+          "source_chain"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "amount",
+          "volume",
+          "cap"
+        ]
+      }
+    ],
+    "cap_set": [
+      {
+        "topicArgs": [
+          "source_chain"
+        ],
+        "dataKind": "value",
+        "data": [
+          "new_cap"
+        ]
+      }
+    ],
+    "cap_upd": [
+      {
+        "topicArgs": [
+          "source_chain"
+        ],
+        "dataKind": "value",
+        "data": [
+          "new_cap"
+        ]
+      }
+    ],
+    "cap_warn": [
+      {
+        "topicArgs": [
+          "source_chain"
+        ],
+        "dataKind": "tuple",
+        "data": [
+          "projected",
+          "cap"
+        ]
+      }
+    ]
+  }
+}
