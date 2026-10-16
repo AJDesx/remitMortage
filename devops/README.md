@@ -131,6 +131,23 @@ For detailed manifest configuration and policies, see [devops/k8s/README.md](./k
 
 ---
 
+## DNS Failover (Health-Checked Records)
+
+A regional outage should not require a manual DNS edit. The
+`devops/terraform/dns-failover/` module provisions a Route 53 **health-checked
+failover** record pair (PRIMARY/SECONDARY) with tuned TTLs, plus CloudWatch
+alarms that fire on failover and failback. The expected recovery time is
+`health_check_interval * failure_threshold + max(primary_ttl, secondary_ttl)`
+(default `10s * 3 + 30s = 60s`, target RTO ≤ 120s).
+
+- Module: [`devops/terraform/dns-failover/`](./terraform/dns-failover/README.md)
+- Alerts: [`devops/prometheus/dns-failover-alerts.yml`](./prometheus/dns-failover-alerts.yml)
+- Runbook: [`docs/DNS_FAILOVER_RUNBOOK.md`](../docs/DNS_FAILOVER_RUNBOOK.md)
+- Drill: `scripts/dns-failover-drill.mjs` (run by the scheduled **DNS Failover
+  Drill** workflow; `--simulate` proves failover and failback logic in CI).
+
+---
+
 ## Backup Verification
 
 A backup nobody has restored is an assumption, not a recovery plan. The
