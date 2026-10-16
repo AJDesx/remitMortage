@@ -113,6 +113,28 @@ pub enum PoolError {
     PayoffQuoteExpired = 52,
     /// Payoff quotes are disabled (window is zero) or the window is invalid.
     InvalidQuoteWindow = 53,
+    /// Haircut basis points outside the allowed [0, MAX_HAIRCUT_BPS] range.
+    InvalidHaircutBps = 54,
+    /// A haircut change is pending for this asset class but the timelock
+    /// delay has not yet elapsed.
+    HaircutChangeTimelockActive = 55,
+    /// The action is blocked because the pool is winding down or finalized
+    /// (new deposits and loan requests are rejected once wind-down starts).
+    PoolWindingDown = 56,
+    /// `start_wind_down` was called while the pool is already winding down
+    /// or finalized.
+    AlreadyWindingDown = 57,
+    /// A wind-down start is pending but the timelock delay has not yet
+    /// elapsed.
+    WindDownTimelockActive = 58,
+    /// The action requires the pool to be winding down, but it is still
+    /// `Active` (wind-down was never started).
+    PoolNotWindingDown = 59,
+    /// `finalize_wind_down` was called while loans are still outstanding.
+    LoansStillOutstanding = 60,
+    /// A junior-tranche withdrawal during wind-down would dip into the
+    /// liquidity reserved for the senior tranche's outstanding principal.
+    SeniorityReserveBreached = 61,
 }
 
 #[contracterror]
