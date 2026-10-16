@@ -49,10 +49,9 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: 'npm'
@@ -102,7 +101,7 @@ jobs:
         # Keep the summary either way — a passing run is the audit record that
         # the backup was verified this month.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: backup-verification-report
           path: ${{ env.REPORT_PATH }}
@@ -112,7 +111,7 @@ jobs:
       # surfaces on the PR itself and needs no page.
       - name: Email Alert on Failed Recovery Check
         if: failure() && github.event_name != 'pull_request'
-        uses: dawidd6/action-send-mail@v3
+        uses: dawidd6/action-send-mail@4226df7daafa6fc901a43789c49bf7ab309066e7 # v3
         with:
           server_address: ${{ secrets.ALERT_SMTP_SERVER }}
           server_port: ${{ secrets.ALERT_SMTP_PORT }}
@@ -153,10 +152,9 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -170,7 +168,7 @@ jobs:
 
       - name: Upload Rotation Check Report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: backup-key-rotation-report
           path: ${{ env.REPORT_PATH }}
@@ -178,7 +176,7 @@ jobs:
 
       - name: Email Alert on Stuck Rotation
         if: failure()
-        uses: dawidd6/action-send-mail@v3
+        uses: dawidd6/action-send-mail@4226df7daafa6fc901a43789c49bf7ab309066e7 # v3
         with:
           server_address: ${{ secrets.ALERT_SMTP_SERVER }}
           server_port: ${{ secrets.ALERT_SMTP_PORT }}
