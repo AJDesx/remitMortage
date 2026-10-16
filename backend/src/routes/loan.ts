@@ -1,7 +1,7 @@
 // Copyright (c) 2026 RemitMortgage Protocol Contributors
 // SPDX-License-Identifier: MIT
 
-import { Router } from "express";
+import { Router, Response } from "express";
 import { StrKey } from "@stellar/stellar-sdk";
 import logger from "../utils/logger.js";
 import { validatePositiveNumber } from "../middleware/validate.js";
@@ -15,12 +15,15 @@ import {
   resumeDraftApplication,
   discardDraftApplication,
   escrowTargetMetForAmount,
+  StaleVersionError,
 } from "../services/loanStore.js";
+import { applyAutoRejectionIfNeeded } from "../services/autoRejectionRuleStore.js";
 import {
   verifyStellarGuarantorSignature,
   buildGuarantorCommitment,
 } from "../services/guarantor.js";
 import { queueNotification } from "../services/notification.js";
+import { notifyWatchersOfOpenedOffering } from "../services/offeringWatchlist.js";
 import { hasExpiredKycDocuments } from "../jobs/kycExpiryReminder.js";
 import { prisma } from "../services/db.js";
 import {
@@ -42,6 +45,47 @@ import {
 import type { AuthenticatedRequest } from "../middleware/auth.js";
 
 export const loanRouter = Router();
+
+const REQUIRED_DOCUMENTS_BY_LOAN_TYPE: Record<string, string[]> = {
+  purchase: ["identity", "income", "bank_statement", "property_contract"],
+  construction: ["identity", "income", "bank_statement", "construction_plan"],
+};
+
+// ── Optimistic locking (issue #846) ─────────────────────────────────────────
+//
+// Every reviewer decision must echo back the application version the reviewer
+// was looking at (`expectedVersion`). A missing/invalid token is a 400; a
+// token that no longer matches the record is a 409 carrying the current
+// state, so the client re-reads and re-applies instead of silently
+// overwriting a concurrent decision.
+
+/** Validates the optimistic-lock token; returns null when absent/invalid. */
+function parseExpectedVersion(raw: unknown): number | null {
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 1 ? raw : null;
+}
+
+/** 409 body: what the client sent, what the record holds now, and the record. */
+function versionConflictResponse(res: Response, expectedVersion: number, current: { version: number }) {
+  return res.status(409).json({
+    error: "version_conflict",
+    message:
+      `Application was modified concurrently: expected version ${expectedVersion}, ` +
+      `current version ${current.version}. Fetch the latest state and retry with the current version.`,
+    expectedVersion,
+    currentVersion: current.version,
+    application: current,
+  });
+}
+
+/** The 400 returned when a decision endpoint is called without the token. */
+function missingExpectedVersionResponse(res: Response) {
+  return res.status(400).json({
+    error: "missing_field",
+    field: "expectedVersion",
+    message:
+      "expectedVersion is required: send the version of the application you reviewed (integer >= 1) so concurrent decisions cannot overwrite each other.",
+  });
+}
 
 // POST /api/loan/apply
 loanRouter.post("/apply", idempotencyMiddleware, validatePositiveNumber("amount"), async (req, res) => {
@@ -120,7 +164,7 @@ loanRouter.post("/apply", idempotencyMiddleware, validatePositiveNumber("amount"
     if (taxIdMatches.length > 0) {
       await prisma.loanApplication.update({
         where: { id: app.id },
-        data: { manualReviewReason: DUPLICATE_TAX_ID_REVIEW_REASON },
+        data: { manualReviewReason: DUPLICATE_TAX_ID_REVIEW_REASON, version: { increment: 1 } },
       });
       app.manualReviewReason = DUPLICATE_TAX_ID_REVIEW_REASON;
       logger.warn(
@@ -203,6 +247,13 @@ loanRouter.post("/:id/approve", idempotencyMiddleware, async (req, res) => {
   const app = await requireLoanAdmin(req as AuthenticatedRequest, res, id);
   if (!app) return;
 
+  // Optimistic lock (issue #846): echo back the version that was reviewed.
+  // Checked before the state machine so a stale decision reads as a 409 with
+  // the current state rather than a misleading 400 about the old status.
+  const expectedVersion = parseExpectedVersion(req.body?.expectedVersion);
+  if (expectedVersion === null) return missingExpectedVersionResponse(res);
+  if (app.version !== expectedVersion) return versionConflictResponse(res, expectedVersion, app);
+
   if (app.status !== "Pending") {
     return res.status(400).json({
       error: "invalid_state",
@@ -221,7 +272,11 @@ loanRouter.post("/:id/approve", idempotencyMiddleware, async (req, res) => {
   }
 
   try {
-    const approved = await updateApplication(id, { status: "Approved" });
+    const approved = await updateApplication(
+      id,
+      { status: "Approved" },
+      { expectedVersion }
+    );
 
     // simulate request_loan + approve_loan
     logger.info(`Simulating on-chain request_loan for application ${id}`);
@@ -233,6 +288,10 @@ loanRouter.post("/:id/approve", idempotencyMiddleware, async (req, res) => {
       req.body.webhookUrl || "https://partner-platform.com/webhooks";
 
     if (approved) {
+      // The offering has just opened for investment: tell investors watching
+      // it (issue #799). Best-effort and never throws — must not fail approval.
+      void notifyWatchersOfOpenedOffering(id);
+
       await queueNotification(
         email,
         "EMAIL",
@@ -258,6 +317,11 @@ loanRouter.post("/:id/approve", idempotencyMiddleware, async (req, res) => {
 
     return res.json(disbursing);
   } catch (err) {
+    // Optimistic lock lost between this request's read and its write
+    // (issue #846) — return the record as it stands now.
+    if (err instanceof StaleVersionError) {
+      return versionConflictResponse(res, err.expectedVersion, err.current);
+    }
     logger.error("Approve error", { err });
     return res.status(500).json({ error: "approve_failed" });
   }
@@ -273,6 +337,11 @@ loanRouter.post("/:id/reject", async (req, res) => {
   const app = await requireLoanAdmin(req as AuthenticatedRequest, res, id);
   if (!app) return;
 
+  // Optimistic lock (issue #846) — see POST /:id/approve for rationale.
+  const expectedVersion = parseExpectedVersion(req.body?.expectedVersion);
+  if (expectedVersion === null) return missingExpectedVersionResponse(res);
+  if (app.version !== expectedVersion) return versionConflictResponse(res, expectedVersion, app);
+
   if (app.status !== "Pending") {
     return res.status(400).json({
       error: "invalid_state",
@@ -280,11 +349,23 @@ loanRouter.post("/:id/reject", async (req, res) => {
     });
   }
 
-  const updated = await updateApplication(id, {
-    status: "Rejected",
-    reason: reason ?? "No reason provided",
-  });
-  return res.json(updated);
+  try {
+    const updated = await updateApplication(
+      id,
+      {
+        status: "Rejected",
+        reason: reason ?? "No reason provided",
+      },
+      { expectedVersion }
+    );
+    return res.json(updated);
+  } catch (err) {
+    if (err instanceof StaleVersionError) {
+      return versionConflictResponse(res, err.expectedVersion, err.current);
+    }
+    logger.error("Reject error", { err });
+    return res.status(500).json({ error: "reject_failed" });
+  }
 });
 
 // POST /api/loan/:id/resume
@@ -449,13 +530,24 @@ loanRouter.post("/:id/review", async (req, res) => {
     const app = await requireLoanAdmin(req as AuthenticatedRequest, res, id);
     if (!app) return;
 
+    // Optimistic lock (issue #846): the reviewer must echo the version they
+    // reviewed — checked before mutating anything so a stale decision is
+    // rejected with the current state instead of overwriting a concurrent one.
+    const expectedVersion = parseExpectedVersion(req.body?.expectedVersion);
+    if (expectedVersion === null) return missingExpectedVersionResponse(res);
+    if (app.version !== expectedVersion) return versionConflictResponse(res, expectedVersion, app);
+
     const auditLog = logReviewerDecision(id, reviewerId, decision, reason);
 
     const newStatus = decision === "APPROVED" ? "Pending" : "Rejected";
-    const updated = await updateApplication(id, {
-      status: newStatus,
-      reason: reason || (decision === "APPROVED" ? "Manual review approved" : "Manual review rejected duplicate"),
-    });
+    const updated = await updateApplication(
+      id,
+      {
+        status: newStatus,
+        reason: reason || (decision === "APPROVED" ? "Manual review approved" : "Manual review rejected duplicate"),
+      },
+      { expectedVersion }
+    );
 
     return res.json({
       message: `Application reviewed successfully: set status to ${newStatus}`,
@@ -463,6 +555,9 @@ loanRouter.post("/:id/review", async (req, res) => {
       auditLog,
     });
   } catch (error: any) {
+    if (error instanceof StaleVersionError) {
+      return versionConflictResponse(res, error.expectedVersion, error.current);
+    }
     logger.error("Manual review decision error", { error });
     return res.status(500).json({ error: "failed_to_process_review", message: error.message });
   }

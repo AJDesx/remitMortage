@@ -1,0 +1,14 @@
+{
+  "backend": {
+    "dockerfile": "backend/Dockerfile",
+    "context": "backend",
+    "maxBytes": 419430400,
+    "graceUntil": null
+  },
+  "frontend": {
+    "dockerfile": "frontend/Dockerfile",
+    "context": "frontend",
+    "maxBytes": 314572800,
+    "graceUntil": null
+  }
+}

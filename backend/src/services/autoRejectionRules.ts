@@ -28,6 +28,15 @@ export interface RuleEvaluationFailure {
   ruleName: string;
   ruleType: AutoRejectionRuleType;
   reason: string;
+  /**
+   * For a MIN_CREDIT_SCORE failure, the stable reason codes + text behind
+   * *why* the score was low (`VerificationResult.scoreReasons`), attached by
+   * the caller (`autoRejectionRuleStore.ts`) since `evaluateRule` only has
+   * the bare `creditScore` number, not the full scoring record. Absent for
+   * every other rule type, and absent here too if no verification result
+   * with stored reasons exists yet for the applicant.
+   */
+  scoreReasons?: unknown;
 }
 
 export interface RuleEvaluationResult {

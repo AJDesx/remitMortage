@@ -83,14 +83,8 @@ pub enum EscrowError {
     InvalidInactivityPeriod = 32,
     /// Attestor configuration must have a non-empty signer set and a valid threshold.
     InvalidAttestorConfig = 33,
-    /// No hardship withdrawal request exists for this borrower/goal.
-    HardshipRequestNotFound = 39,
-    /// A hardship withdrawal request is already pending for this borrower/goal.
-    HardshipRequestAlreadyExists = 40,
-    /// The hardship withdrawal request has not been approved yet.
-    HardshipRequestNotApproved = 41,
-    /// The hardship withdrawal request's approval window has elapsed.
-    HardshipRequestExpired = 42,
-    /// This withdrawal would exceed the configured hardship cap for the current period.
-    HardshipAmountExceedsCap = 43,
+    /// Beneficiary split shares do not sum to exactly 10 000 basis points (100 %).
+    InvalidBeneficiaryShares = 39,
+    /// Beneficiary list exceeds the maximum allowed number of recipients.
+    BeneficiaryListTooLarge = 40,
 }

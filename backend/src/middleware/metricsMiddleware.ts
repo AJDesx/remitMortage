@@ -5,7 +5,9 @@ import { Request, Response, NextFunction } from "express";
 import {
   httpRequestsTotal,
   httpRequestDurationSeconds,
+  httpRequestsByVersionTotal,
 } from "../services/metrics.js";
+import { CURRENT_API_VERSION } from "./apiVersioning.js";
 
 // ---------------------------------------------------------------------------
 // Route normalisation
@@ -63,6 +65,15 @@ export function httpMetricsMiddleware(
   const startHr = process.hrtime.bigint();
   const method = req.method.toUpperCase();
 
+  // API versioning (issue #847): echo back whichever version was served so
+  // a client can confirm it, defaulting to CURRENT_API_VERSION since no
+  // client sends the request header yet — every endpoint today is that
+  // version. Set eagerly (not in the `finish` handler) so it's present even
+  // if a later middleware/handler ends the response early.
+  const requestedVersion =
+    (req.headers["api-version"] as string | undefined)?.trim() || CURRENT_API_VERSION;
+  res.setHeader("Api-Version", requestedVersion);
+
   res.on("finish", () => {
     const durationS =
       Number(process.hrtime.bigint() - startHr) / 1e9;
@@ -81,6 +92,7 @@ export function httpMetricsMiddleware(
       { method, route, status_code: statusCode },
       durationS
     );
+    httpRequestsByVersionTotal.inc({ version: requestedVersion, method, route });
   });
 
   next();

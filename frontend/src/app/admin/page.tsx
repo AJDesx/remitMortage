@@ -7,14 +7,28 @@ import dynamic from "next/dynamic";
 import toast, { Toaster } from "react-hot-toast";
 import { useWallet, OptionalWalletProvider } from "../../context/WalletContext";
 import { EmptyState } from "../../components/EmptyState";
+import HelpLink from "../../components/help/HelpLink";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
-import { ClipboardList, Hammer, History } from "lucide-react";
+import { useImpersonation } from "../../hooks/useImpersonation";
+import { startImpersonation } from "../../lib/impersonationApi";
+import { ClipboardList, Hammer, History, MessagesSquare } from "lucide-react";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 import ActiveLoansMapView from "../../components/ActiveLoansMapView";
 import AuditLogViewer from "../../components/AuditLogViewer";
+import ApplicantCommunicationTimeline from "../../components/ApplicantCommunicationTimeline";
 import LoanCommentsPanel from "../../components/LoanCommentsPanel";
+import {
+  LoadingRegion,
+  SkeletonStatGrid,
+  SkeletonTable,
+} from "../../components/skeleton/Skeleton";
+import { SKELETON_LAYOUT } from "../../lib/skeleton-layout";
+
+/** Rows shown in the admin tab skeletons while a queue (re)loads. */
+const ADMIN_SKELETON_ROWS = 5;
 import { LoanKanbanBoard, KanbanLoan } from "../../components/LoanKanbanBoard";
+import LoanQueueTable from "../../components/admin/LoanQueueTable";
 
 // The admin wallet authorized to approve loans and milestones. Configured via
 // NEXT_PUBLIC_ADMIN_ADDRESS at build time.
@@ -128,8 +142,8 @@ function AdminShell({ children }: { children: React.ReactNode }) {
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
-type Tab = "loans" | "milestones" | "audit";
-const TAB_ORDER: Tab[] = ["loans", "milestones", "audit"];
+type Tab = "loans" | "milestones" | "audit" | "communications";
+const TAB_ORDER: Tab[] = ["loans", "milestones", "audit", "communications"];
 
 function AdminDashboard() {
   const [tab, setTab] = useState<Tab>("loans");
@@ -139,6 +153,8 @@ function AdminDashboard() {
   const [loading, setLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { status: impersonationStatus } = useImpersonation();
+  const isReadOnly = impersonationStatus.active;
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -146,23 +162,27 @@ function AdminDashboard() {
       const pendingResponse = await fetch("/api/loan/pending");
       if (pendingResponse.ok) {
         const pending = await pendingResponse.json();
-        setLoans((Array.isArray(pending) ? pending : []).map((loan: any) => {
-          let mappedStatus = "submitted";
-          if (loan.status === "Approved") mappedStatus = "approved";
-          else if (loan.status === "Disbursing") mappedStatus = "disbursing";
-          else if (loan.status === "MANUAL_REVIEW") mappedStatus = "underwriting";
-          
-          const daysInStatus = loan.updatedAt ? Math.floor((Date.now() - new Date(loan.updatedAt).getTime()) / 86400000) : 0;
-          
-          return {
-            id: loan.id,
-            borrower: loan.borrowerAddress,
-            principal: Number(loan.amount),
-            verificationScore: Number(loan.verificationScore ?? 0),
-            status: mappedStatus,
-            daysInStatus,
-          };
-        }));
+        setLoans(
+          (Array.isArray(pending) ? pending : []).map((loan: any) => {
+            let mappedStatus = "submitted";
+            if (loan.status === "Approved") mappedStatus = "approved";
+            else if (loan.status === "Disbursing") mappedStatus = "disbursing";
+            else if (loan.status === "MANUAL_REVIEW") mappedStatus = "underwriting";
+
+            const daysInStatus = loan.updatedAt
+              ? Math.floor((Date.now() - new Date(loan.updatedAt).getTime()) / 86400000)
+              : 0;
+
+            return {
+              id: loan.id,
+              borrower: loan.borrowerAddress,
+              principal: Number(loan.amount),
+              verificationScore: Number(loan.verificationScore ?? 0),
+              status: mappedStatus,
+              daysInStatus,
+            };
+          })
+        );
       } else {
         setLoans([]);
       }
@@ -212,14 +232,24 @@ function AdminDashboard() {
 
   async function confirmAction() {
     if (!pendingAction) return;
+    if (isReadOnly) {
+      toast.error("Approvals are disabled while viewing read-only.");
+      setPendingAction(null);
+      return;
+    }
     setSubmitting(true);
     try {
       if (pendingAction.kind === "approve-loan") {
         const response = await fetch(`/api/loan/${pendingAction.loan.id}/approve`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({}),
+          // Optimistic lock (issue #846): echo the version we rendered so a
+          // concurrent decision on this loan can never be overwritten.
+          body: JSON.stringify({ expectedVersion: pendingAction.loan.version }),
         });
+        if (response.status === 409) {
+          throw new Error("This loan changed since it was loaded — refresh and review it again.");
+        }
         if (!response.ok) throw new Error("Loan approval failed.");
       }
 
@@ -243,6 +273,8 @@ function AdminDashboard() {
 
   return (
     <div className="space-y-8">
+      <ViewAsUserPanel isReadOnly={isReadOnly} />
+
       <PoolOverviewCard overview={overview} loading={loading} />
 
       <ActiveLoansMapView />
@@ -269,6 +301,14 @@ function AdminDashboard() {
           <History className="h-3.5 w-3.5 mr-1.5" aria-hidden="true" />
           Audit Log
         </TabButton>
+        <TabButton
+          id="communications"
+          active={tab === "communications"}
+          onClick={() => setTab("communications")}
+        >
+          <MessagesSquare className="h-3.5 w-3.5 mr-1.5" aria-hidden="true" />
+          Communications
+        </TabButton>
       </div>
 
       <div id="admin-tabpanel" role="tabpanel" aria-labelledby={`admin-tab-${tab}`} tabIndex={0}>
@@ -279,15 +319,19 @@ function AdminDashboard() {
             onApprove={(loan) => setPendingAction({ kind: "approve-loan", loan })}
             onReject={(loan) => setPendingAction({ kind: "reject-loan", loan })}
             onRefresh={loadData}
+            isReadOnly={isReadOnly}
           />
         ) : tab === "milestones" ? (
           <MilestoneReviewsTab
             milestones={milestones}
             loading={loading}
             onApprove={(milestone) => setPendingAction({ kind: "approve-milestone", milestone })}
+            isReadOnly={isReadOnly}
           />
-        ) : (
+        ) : tab === "audit" ? (
           <AuditLogViewer />
+        ) : (
+          <ApplicantCommunicationTimeline />
         )}
       </div>
 
@@ -342,6 +386,94 @@ function TabButton({
   );
 }
 
+// ── View As User (read-only impersonation) ─────────────────────────────────
+
+function ViewAsUserPanel({ isReadOnly }: { isReadOnly: boolean }) {
+  const [targetWallet, setTargetWallet] = useState("");
+  const [reason, setReason] = useState("");
+  const [starting, setStarting] = useState(false);
+
+  async function handleStart(e: React.FormEvent) {
+    e.preventDefault();
+    if (!targetWallet.trim()) return;
+
+    setStarting(true);
+    try {
+      await startImpersonation(targetWallet.trim(), reason.trim() || undefined);
+      toast.success("Now viewing as user, read-only. Look for the banner at the top of the page.");
+      setTargetWallet("");
+      setReason("");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to start impersonation session."
+      );
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  if (isReadOnly) {
+    return (
+      <div className="p-4 rounded-lg border border-rose-500/30 bg-rose-500/10 text-sm text-rose-300">
+        You're currently viewing as another user, read-only. End that session (via the banner above)
+        before starting a new one.
+      </div>
+    );
+  }
+
+  return (
+    <details className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)]">
+      <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-[var(--text-primary)]">
+        View as user (read-only support session)
+      </summary>
+      <form
+        onSubmit={handleStart}
+        className="flex flex-col gap-3 px-4 pb-4 md:flex-row md:items-end"
+      >
+        <div className="flex-1">
+          <label
+            htmlFor="impersonate-wallet"
+            className="block text-xs text-[var(--text-muted)] mb-1"
+          >
+            User wallet address
+          </label>
+          <input
+            id="impersonate-wallet"
+            type="text"
+            value={targetWallet}
+            onChange={(e) => setTargetWallet(e.target.value)}
+            placeholder="G..."
+            className="w-full rounded-lg border border-[var(--border-color)] bg-transparent px-3 py-2 text-sm font-mono"
+          />
+        </div>
+        <div className="flex-1">
+          <label
+            htmlFor="impersonate-reason"
+            className="block text-xs text-[var(--text-muted)] mb-1"
+          >
+            Reason (optional, for the audit log)
+          </label>
+          <input
+            id="impersonate-reason"
+            type="text"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Support ticket #1234"
+            className="w-full rounded-lg border border-[var(--border-color)] bg-transparent px-3 py-2 text-sm"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={starting || !targetWallet.trim()}
+          className="btn-primary !py-2 !px-4 whitespace-nowrap disabled:opacity-50"
+        >
+          {starting ? "Starting…" : "View as user"}
+        </button>
+      </form>
+    </details>
+  );
+}
+
 // ── Pool Overview ────────────────────────────────────────────────────────────
 
 function PoolOverviewCard({
@@ -358,18 +490,30 @@ function PoolOverviewCard({
     { label: "Total Repaid", value: overview ? formatUsdc(overview.totalRepaid) : "—" },
   ];
   return (
-    <section aria-label="Pool overview" className="grid grid-cols-2 md:grid-cols-4 gap-4">
-      {cards.map((card) => (
-        <div
-          key={card.label}
-          className={`p-5 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)] ${
-            loading ? "animate-pulse" : ""
-          }`}
-        >
-          <p className="text-xs text-[var(--text-muted)] mb-1">{card.label}</p>
-          <p className="text-2xl font-bold">{card.value}</p>
-        </div>
-      ))}
+    <section
+      aria-label="Pool overview"
+      aria-busy={loading}
+      className="grid grid-cols-2 md:grid-cols-4 gap-4"
+    >
+      {loading && (
+        <span role="status" className="sr-only">
+          Loading pool overview
+        </span>
+      )}
+      {loading ? (
+        <SkeletonStatGrid className="contents" />
+      ) : (
+        cards.map((card) => (
+          <div
+            key={card.label}
+            className="p-5 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]"
+            style={{ minHeight: SKELETON_LAYOUT.statCard }}
+          >
+            <p className="text-xs text-[var(--text-muted)] mb-1">{card.label}</p>
+            <p className="text-2xl font-bold">{card.value}</p>
+          </div>
+        ))
+      )}
     </section>
   );
 }
@@ -385,26 +529,36 @@ interface BulkResultItem {
 function PendingLoansTab({
   loans,
   loading,
+  isReadOnly,
   onApprove,
   onReject,
   onRefresh,
 }: {
   loans: PendingLoan[];
   loading: boolean;
+  isReadOnly: boolean;
   onApprove: (loan: PendingLoan) => void;
   onReject: (loan: PendingLoan) => void;
   onRefresh: () => void;
 }) {
   const { publicKey } = useWallet();
   const [expandedLoanId, setExpandedLoanId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"list" | "kanban">("kanban");
+  const [viewMode, setViewMode] = useState<"list" | "kanban" | "table">("kanban");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [summaryItems, setSummaryItems] = useState<BulkResultItem[] | null>(null);
   const [reassignModalOpen, setReassignModalOpen] = useState(false);
   const [assigneeAddress, setAssigneeAddress] = useState("");
 
-  if (loading) return <EmptyRow text="Loading pending loans…" />;
+  if (loading) {
+    return (
+      <LoadingRegion
+        loading
+        label="Loading pending loans"
+        skeleton={<SkeletonTable rows={ADMIN_SKELETON_ROWS} />}
+      />
+    );
+  }
   if (loans.length === 0) {
     return (
       <EmptyState
@@ -546,6 +700,7 @@ function PendingLoansTab({
             />
             <span>Select All ({loans.length} loans)</span>
           </label>
+          <HelpLink context="admin-review" />
           <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
             <button
               onClick={() => setViewMode("kanban")}
@@ -559,6 +714,12 @@ function PendingLoansTab({
             >
               List
             </button>
+            <button
+              onClick={() => setViewMode("table")}
+              className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${viewMode === "table" ? "bg-cyan-500 text-slate-900" : "text-slate-400 hover:text-slate-200"}`}
+            >
+              Table
+            </button>
           </div>
         </div>
         {selectedIds.size > 0 && (
@@ -569,10 +730,10 @@ function PendingLoansTab({
       </div>
 
       {viewMode === "kanban" ? (
-        <LoanKanbanBoard 
-          loans={loans} 
+        <LoanKanbanBoard
+          loans={loans}
           onStatusChange={async (loanId, newStatus) => {
-            const loan = loans.find(l => l.id === loanId);
+            const loan = loans.find((l) => l.id === loanId);
             if (!loan) return;
             // Respect existing status-change API rules by calling the bulk-review or approve/reject handles
             if (newStatus === "approved") {
@@ -584,71 +745,82 @@ function PendingLoansTab({
               // Currently we'll just trigger a refresh
               onRefresh();
             }
-          }} 
+          }}
+        />
+      ) : viewMode === "table" ? (
+        <LoanQueueTable
+          loans={loans}
+          onApprove={onApprove}
+          onReject={onReject}
+          userId={publicKey}
         />
       ) : (
         <>
           {loans.map((loan) => {
             const isSelected = selectedIds.has(loan.id);
-        return (
-          <div
-            key={loan.id}
-            className={`p-4 bg-[var(--bg-card)] rounded-lg border transition-colors ${
-              isSelected ? "border-[var(--accent-primary)] bg-[var(--accent-primary)]/5" : "border-[var(--border-color)]"
-            }`}
-          >
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
-                <input
-                  type="checkbox"
-                  id={`select-loan-${loan.id}`}
-                  checked={isSelected}
-                  onChange={() => toggleSelectLoan(loan.id)}
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-sky-500 focus:ring-sky-500 mr-2"
-                />
-                <div>
-                  <p className="text-xs text-[var(--text-muted)]">Borrower</p>
-                  <p className="text-sm font-mono">{shortenAddress(loan.borrower)}</p>
+            return (
+              <div
+                key={loan.id}
+                className={`p-4 bg-[var(--bg-card)] rounded-lg border transition-colors ${
+                  isSelected
+                    ? "border-[var(--accent-primary)] bg-[var(--accent-primary)]/5"
+                    : "border-[var(--border-color)]"
+                }`}
+              >
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+                    <input
+                      type="checkbox"
+                      id={`select-loan-${loan.id}`}
+                      checked={isSelected}
+                      onChange={() => toggleSelectLoan(loan.id)}
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-sky-500 focus:ring-sky-500 mr-2"
+                    />
+                    <div>
+                      <p className="text-xs text-[var(--text-muted)]">Borrower</p>
+                      <p className="text-sm font-mono">{shortenAddress(loan.borrower)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-[var(--text-muted)]">Principal</p>
+                      <p className="text-sm font-semibold">{formatUsdc(loan.principal)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-[var(--text-muted)]">Verification Score</p>
+                      <p className="text-sm font-semibold">
+                        <ScoreBadge score={loan.verificationScore} />
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      onClick={() => setExpandedLoanId(expandedLoanId === loan.id ? null : loan.id)}
+                      className="px-3 py-2 rounded-lg text-sm font-medium bg-sky-500/10 text-sky-400 border border-sky-500/30 hover:bg-sky-500/20 transition-colors"
+                    >
+                      {expandedLoanId === loan.id ? "Hide Discussion" : "Discuss"}
+                    </button>
+                    <button
+                      data-testid={`admin-approve-${loan.id}`}
+                      onClick={() => onApprove(loan)}
+                      className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => onReject(loan)}
+                      className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors"
+                    >
+                      Reject
+                    </button>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-xs text-[var(--text-muted)]">Principal</p>
-                  <p className="text-sm font-semibold">{formatUsdc(loan.principal)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-[var(--text-muted)]">Verification Score</p>
-                  <p className="text-sm font-semibold">
-                    <ScoreBadge score={loan.verificationScore} />
-                  </p>
-                </div>
+                {expandedLoanId === loan.id && publicKey && (
+                  <LoanCommentsPanel loanApplicationId={loan.id} currentUserAddress={publicKey} />
+                )}
               </div>
-              <div className="flex gap-2 shrink-0">
-                <button
-                  onClick={() => setExpandedLoanId(expandedLoanId === loan.id ? null : loan.id)}
-                  className="px-3 py-2 rounded-lg text-sm font-medium bg-sky-500/10 text-sky-400 border border-sky-500/30 hover:bg-sky-500/20 transition-colors"
-                >
-                  {expandedLoanId === loan.id ? "Hide Discussion" : "Discuss"}
-                </button>
-                <button
-                  data-testid={`admin-approve-${loan.id}`}
-                  onClick={() => onApprove(loan)}
-                  className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors"
-                >
-                  Approve
-                </button>
-                <button
-                  onClick={() => onReject(loan)}
-                  className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors"
-                >
-                  Reject
-                </button>
-              </div>
-            </div>
-            {expandedLoanId === loan.id && publicKey && (
-              <LoanCommentsPanel loanApplicationId={loan.id} currentUserAddress={publicKey} />
-            )}
-          </div>
-        );
-      })}
+            );
+          })}
+        </>
+      )}
 
       {/* Sticky Bulk Action Toolbar */}
       {selectedIds.size > 0 && (
@@ -693,7 +865,8 @@ function PendingLoansTab({
           <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-6 max-w-md w-full space-y-4">
             <h3 className="text-lg font-bold text-white">Bulk Reassign Loans</h3>
             <p className="text-xs text-[var(--text-muted)]">
-              Enter the reviewer wallet or address to assign the selected {selectedIds.size} loan application(s) to:
+              Enter the reviewer wallet or address to assign the selected {selectedIds.size} loan
+              application(s) to:
             </p>
             <input
               type="text"
@@ -742,7 +915,9 @@ function PendingLoansTab({
                       : "bg-red-500/10 border-red-500/30 text-red-300"
                   }`}
                 >
-                  <span className="font-mono font-medium">App ID: {item.applicationId.slice(0, 12)}...</span>
+                  <span className="font-mono font-medium">
+                    App ID: {item.applicationId.slice(0, 12)}...
+                  </span>
                   <div className="text-right">
                     <span className="font-bold block">{item.status}</span>
                     <span className="opacity-80 text-[11px]">{item.message}</span>
@@ -775,13 +950,23 @@ function ScoreBadge({ score }: { score: number }) {
 function MilestoneReviewsTab({
   milestones,
   loading,
+  isReadOnly,
   onApprove,
 }: {
   milestones: MilestoneReview[];
   loading: boolean;
+  isReadOnly: boolean;
   onApprove: (milestone: MilestoneReview) => void;
 }) {
-  if (loading) return <EmptyRow text="Loading milestone reviews…" />;
+  if (loading) {
+    return (
+      <LoadingRegion
+        loading
+        label="Loading milestone reviews"
+        skeleton={<SkeletonTable rows={ADMIN_SKELETON_ROWS} />}
+      />
+    );
+  }
   if (milestones.length === 0) {
     return (
       <EmptyState
@@ -799,6 +984,7 @@ function MilestoneReviewsTab({
         <div
           key={milestone.id}
           className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]"
+          style={{ minHeight: SKELETON_LAYOUT.tableRow }}
         >
           <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
             <div>
@@ -824,21 +1010,15 @@ function MilestoneReviewsTab({
           <div className="shrink-0">
             <button
               onClick={() => onApprove(milestone)}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors"
+              disabled={isReadOnly}
+              title={isReadOnly ? "Disabled while viewing read-only" : undefined}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-500/15"
             >
               Approve Disbursement
             </button>
           </div>
         </div>
       ))}
-    </div>
-  );
-}
-
-function EmptyRow({ text }: { text: string }) {
-  return (
-    <div className="p-8 text-center text-sm text-[var(--text-muted)] bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]">
-      {text}
     </div>
   );
 }

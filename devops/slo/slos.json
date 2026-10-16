@@ -1,0 +1,36 @@
+{
+  "$comment": "Single source of truth for SLOs. Run `node scripts/generate-slo-artifacts.mjs` to regenerate devops/prometheus/slo-burn-rate-alerts.yml and devops/grafana/slo-error-budget-dashboard.json. See docs/SLO_ERROR_BUDGET_POLICY.md.",
+  "windowDays": 30,
+  "tiers": [
+    { "name": "fast", "severity": "page", "burnRate": 14.4, "longWindow": "1h", "shortWindow": "5m", "for": "2m" },
+    { "name": "medium", "severity": "page", "burnRate": 6, "longWindow": "6h", "shortWindow": "30m", "for": "2m" },
+    { "name": "slow", "severity": "ticket", "burnRate": 3, "longWindow": "1d", "shortWindow": "2h", "for": "15m" },
+    { "name": "gradual", "severity": "ticket", "burnRate": 1, "longWindow": "3d", "shortWindow": "6h", "for": "15m" }
+  ],
+  "slos": [
+    {
+      "id": "api-availability",
+      "title": "API availability",
+      "journey": "Any client request to the public API succeeds (is not a server error).",
+      "target": 0.999,
+      "component": "api",
+      "errorRatioExpr": "sum(rate(remitmortgage_http_requests_total{status_code=~\"5..\", route!~\"/metrics|/api/health\"}[{{window}}])) / sum(rate(remitmortgage_http_requests_total{route!~\"/metrics|/api/health\"}[{{window}}]))"
+    },
+    {
+      "id": "api-latency",
+      "title": "API request latency",
+      "journey": "95% of API requests complete in under 500 ms.",
+      "target": 0.95,
+      "component": "api",
+      "errorRatioExpr": "1 - (sum(rate(remitmortgage_http_request_duration_seconds_bucket{le=\"0.5\", route!~\"/metrics|/api/health\"}[{{window}}])) / sum(rate(remitmortgage_http_request_duration_seconds_count{route!~\"/metrics|/api/health\"}[{{window}}])))"
+    },
+    {
+      "id": "tx-submission-success",
+      "title": "Transaction submission success",
+      "journey": "Loan and milestone write requests (the paths that build and submit Soroban transactions) do not fail with a server error.",
+      "target": 0.995,
+      "component": "transactions",
+      "errorRatioExpr": "sum(rate(remitmortgage_http_requests_total{method=\"POST\", route=~\"/api/(loan|milestone).*\", status_code=~\"5..\"}[{{window}}])) / sum(rate(remitmortgage_http_requests_total{method=\"POST\", route=~\"/api/(loan|milestone).*\"}[{{window}}]))"
+    }
+  ]
+}

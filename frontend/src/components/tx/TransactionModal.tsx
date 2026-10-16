@@ -13,7 +13,9 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
+import { announce } from "../../lib/announcer";
 import {
+  describeTransactionAnnouncement,
   formatTransactionErrorMessage,
   getTransactionExplorerLinks,
   shortenAddress,
@@ -115,6 +117,14 @@ export default function TransactionModal({
       document.body.style.overflow = previousOverflow;
     };
   }, [isOpen]);
+
+  // Announce each phase transition (including success/failure) to screen
+  // readers without moving focus out of the dialog.
+  useEffect(() => {
+    if (!isOpen) return;
+    const announcement = describeTransactionAnnouncement(transactionType, phase, errorMessage);
+    if (announcement) announce(announcement.message, { priority: announcement.priority });
+  }, [isOpen, phase, transactionType, errorMessage]);
 
   if (!isOpen || phase === "idle") return null;
 

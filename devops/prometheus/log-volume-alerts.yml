@@ -1,0 +1,119 @@
+# Prometheus alerting rules for log volume and cost controls (issue #875).
+#
+# Load alongside the existing rule files, e.g.:
+#
+#   # prometheus.yml
+#   rule_files:
+#     - /etc/prometheus/rules/log-volume-alerts.yml
+#
+# Or, under the Prometheus Operator, wrap `groups` below in a PrometheusRule
+# custom resource.
+#
+# Metrics are exported by the backend log pipeline (utils/logSampling.ts):
+#
+#   remitmortgage_log_volume_bytes{service}              bytes in the current window
+#   remitmortgage_log_volume_budget_bytes{service}       configured budget
+#   remitmortgage_log_volume_utilization_ratio{service}  bytes / budget
+#   remitmortgage_log_volume_over_budget{service}        1 when over budget
+#   remitmortgage_log_entries_total{service,level}       entries kept
+#   remitmortgage_log_entries_dropped_total{service,level} entries sampled out
+#
+# The budget and window are configured per deployment via LOG_VOLUME_BUDGET_BYTES
+# and LOG_VOLUME_BUDGET_WINDOW_MS. See docs/LOG_SAMPLING_COST_CONTROLS.md for how
+# to size them.
+
+groups:
+  - name: remitmortgage-log-volume
+    interval: 30s
+    rules:
+      # ── Budget exceeded ───────────────────────────────────────────────────
+      # The primary cost-control alert: a service has produced more log bytes
+      # than its configured budget inside the current window. Sampling thins
+      # debug/info noise, but a step change here usually means a log storm —
+      # a retry loop, a new verbose call site, or an exception cascade — and
+      # should be investigated rather than simply tolerated.
+      - alert: LogVolumeBudgetExceeded
+        expr: remitmortgage_log_volume_over_budget > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+          component: logging
+        annotations:
+          summary: >-
+            Service {{ $labels.service }} has exceeded its log volume budget.
+          description: >-
+            {{ $labels.service }} produced {{ $value }} of traffic over its
+            configured LOG_VOLUME_BUDGET_BYTES within the budget window.
+            Identify the noisy source(s) from the `remitmortgage_log_entries_total`
+            metric, then either raise the budget deliberately or reduce the
+            source's verbosity. Errors, warnings and audit events are never
+            sampled, so this volume is not the compliance trail.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/LOG_SAMPLING_COST_CONTROLS.md
+
+      # ── Approaching the budget ────────────────────────────────────────────
+      # Fires while there is still room to act, mirroring the DB pool rules.
+      - alert: LogVolumeBudgetApproaching
+        expr: remitmortgage_log_volume_utilization_ratio > 0.8
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+          component: logging
+        annotations:
+          summary: >-
+            Service {{ $labels.service }} has averaged
+            {{ $value | humanizePercentage }} of its log volume budget.
+          description: >-
+            Log volume is trending toward the configured budget. Check for a
+            sustained increase in debug/info emissions before the hard budget
+            alert fires.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/LOG_SAMPLING_COST_CONTROLS.md
+
+      # ── Sampling is doing the work ────────────────────────────────────────
+      # Informational: makes the sampling ratio visible so the drop rate can be
+      # tuned instead of guessed. A very high drop rate on `info` is a signal
+      # that a source is noisier than the policy assumed.
+      - alert: LogSamplingDropRateHigh
+        expr: |
+          sum by (service, level) (rate(remitmortgage_log_entries_dropped_total[15m]))
+            /
+          clamp_min(
+            sum by (service, level) (
+              rate(remitmortgage_log_entries_total[15m])
+              + rate(remitmortgage_log_entries_dropped_total[15m])
+            ),
+            0.0001
+          ) > 0.95
+        for: 30m
+        labels:
+          severity: info
+          team: ops
+          component: logging
+        annotations:
+          summary: >-
+            More than 95% of {{ $labels.level }} logs from
+            {{ $labels.service }} are being sampled out.
+          description: >-
+            The sampling policy is thinning this source aggressively. This is
+            expected for verbose debug output but worth reviewing if the level
+            is `info`, where important operational context may be lost.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/LOG_SAMPLING_COST_CONTROLS.md
+
+      # ── Instrumentation health ────────────────────────────────────────────
+      # A budget of 0 means the gauges were never initialised and the two
+      # budget alerts above are silently disabled.
+      - alert: LogVolumeBudgetNotConfigured
+        expr: remitmortgage_log_volume_budget_bytes == 0
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+          component: logging
+        annotations:
+          summary: >-
+            Log volume budget for {{ $labels.service }} is zero, disabling
+            budget alerting.
+          description: >-
+            initLogSampling did not resolve a positive LOG_VOLUME_BUDGET_BYTES,
+            so log volume budget alerts are not functioning.

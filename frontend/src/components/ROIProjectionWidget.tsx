@@ -2,7 +2,7 @@
 // Copyright (c) 2026 RemitMortgage Protocol Contributors
 // SPDX-License-Identifier: MIT
 
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AreaChart,
   Area,
@@ -13,6 +13,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Loader2 } from "lucide-react";
+import ChartExportControls from "@/components/charts/ChartExportControls";
+import type { ChartExportData, ChartSeries } from "@/lib/chart-export";
 
 type TimeRange = "1m" | "6m" | "1y" | "Max";
 
@@ -74,7 +76,7 @@ export default function ROIProjectionWidget({
 
   const chartData = useMemo(() => {
     if (historicalData.length === 0) return [];
-    
+
     // Base data with principal added to yield
     const data: ChartDataPoint[] = historicalData.map((d) => ({
       date: d.date,
@@ -84,14 +86,14 @@ export default function ROIProjectionWidget({
 
     // The last point of historical data is the current month
     const lastData = data[data.length - 1];
-    
+
     // Connect the historical to projected
     const currentPrincipal = lastData.historicalValue as number;
     lastData.projectedValue = currentPrincipal;
 
     // Generate projections
     const rate = apyBps / 10000;
-    
+
     // Project `projectionMonths` months into the future (slider-controlled).
     let projectedBalance = currentPrincipal;
     const [yearStr, monthStr] = lastData.date.split("-");
@@ -104,12 +106,12 @@ export default function ROIProjectionWidget({
         currentMonth = 1;
         currentYear++;
       }
-      
+
       const dateStr = `${currentYear}-${String(currentMonth).padStart(2, "0")}`;
-      
+
       // Compounding monthly: A = P(1 + r/12)^n
       projectedBalance = projectedBalance * (1 + rate / 12);
-      
+
       data.push({
         date: dateStr,
         historicalValue: null,
@@ -140,35 +142,72 @@ export default function ROIProjectionWidget({
     return "$" + val.toLocaleString("en-US", { maximumFractionDigits: 0 });
   };
 
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+
+  // CSV export mirrors the chart's current view: `chartData` is already
+  // sliced to the selected time range, so the file respects the filter.
+  const exportData = useMemo<ChartExportData>(
+    () => ({
+      columns: ["Month", "Historical value (USDC)", "Projected value (USDC)"],
+      rows: chartData.map((point) => [
+        point.date,
+        point.historicalValue ?? "",
+        point.projectedValue ?? "",
+      ]),
+    }),
+    [chartData]
+  );
+  const exportLegend = useMemo<ChartSeries[]>(
+    () => [
+      { label: "Historical Value", color: "#06b6d4" },
+      { label: "Projected Value", color: "#6366f1" },
+    ],
+    []
+  );
+
   return (
     <div className="p-6 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl mt-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
         <div>
           <h2 className="text-lg font-bold text-white mb-1">Portfolio ROI Projection</h2>
           <p className="text-xs text-slate-400">
-            Compounding projections based on your active {((apyBps) / 100).toFixed(1)}% APY.
+            Compounding projections based on your active {(apyBps / 100).toFixed(1)}% APY.
           </p>
         </div>
 
-        <div className="flex p-1 bg-slate-950 border border-slate-800 rounded-lg shrink-0">
-          {(["1m", "6m", "1y", "Max"] as TimeRange[]).map((tr) => (
-            <button
-              key={tr}
-              onClick={() => setTimeRange(tr)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
-                timeRange === tr
-                  ? "bg-indigo-500 text-white shadow-sm"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              {tr}
-            </button>
-          ))}
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex p-1 bg-slate-950 border border-slate-800 rounded-lg shrink-0">
+            {(["1m", "6m", "1y", "Max"] as TimeRange[]).map((tr) => (
+              <button
+                key={tr}
+                onClick={() => setTimeRange(tr)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                  timeRange === tr
+                    ? "bg-indigo-500 text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                {tr}
+              </button>
+            ))}
+          </div>
+          <ChartExportControls
+            chartTitle={`Portfolio ROI Projection (${timeRange})`}
+            fileBase="roi-projection"
+            data={exportData}
+            legend={exportLegend}
+            getChartContainer={() => chartContainerRef.current}
+            timeRange={timeRange.toLowerCase()}
+            disabled={loading || !!error || chartData.length === 0}
+          />
         </div>
       </div>
 
       <div className="flex items-center gap-4 mb-6">
-        <label htmlFor="projection-months" className="text-xs font-semibold text-slate-300 whitespace-nowrap">
+        <label
+          htmlFor="projection-months"
+          className="text-xs font-semibold text-slate-300 whitespace-nowrap"
+        >
           Repayment Timeline
         </label>
         <input
@@ -187,7 +226,7 @@ export default function ROIProjectionWidget({
         </span>
       </div>
 
-      <div className="h-[280px] w-full relative">
+      <div ref={chartContainerRef} className="h-[280px] w-full relative">
         {loading ? (
           <div className="absolute inset-0 flex items-center justify-center bg-slate-900/50 rounded-xl animate-pulse">
             <Loader2 className="w-6 h-6 animate-spin text-indigo-400" />
@@ -210,45 +249,49 @@ export default function ROIProjectionWidget({
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-              <XAxis 
-                dataKey="date" 
-                stroke="#64748b" 
-                fontSize={12} 
+              <XAxis
+                dataKey="date"
+                stroke="#64748b"
+                fontSize={12}
                 tickLine={false}
                 axisLine={false}
               />
-              <YAxis 
-                stroke="#64748b" 
+              <YAxis
+                stroke="#64748b"
                 fontSize={12}
                 tickLine={false}
                 axisLine={false}
                 tickFormatter={formatCurrency}
               />
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '8px' }}
-                itemStyle={{ color: '#f8fafc' }}
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: "#0f172a",
+                  borderColor: "#1e293b",
+                  borderRadius: "8px",
+                }}
+                itemStyle={{ color: "#f8fafc" }}
                 formatter={(value: number, name: string) => [
-                  `$${value.toLocaleString("en-US", { minimumFractionDigits: 2 })}`, 
-                  name === "historicalValue" ? "Historical Value" : "Projected Value"
+                  `$${value.toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
+                  name === "historicalValue" ? "Historical Value" : "Projected Value",
                 ]}
-                labelStyle={{ color: '#94a3b8', marginBottom: '4px' }}
+                labelStyle={{ color: "#94a3b8", marginBottom: "4px" }}
               />
-              <Area 
-                type="monotone" 
-                dataKey="historicalValue" 
-                stroke="#06b6d4" 
+              <Area
+                type="monotone"
+                dataKey="historicalValue"
+                stroke="#06b6d4"
                 strokeWidth={3}
-                fill="url(#colorHistory)" 
-                activeDot={{ r: 6, fill: '#06b6d4' }}
+                fill="url(#colorHistory)"
+                activeDot={{ r: 6, fill: "#06b6d4" }}
               />
-              <Area 
-                type="monotone" 
-                dataKey="projectedValue" 
-                stroke="#6366f1" 
+              <Area
+                type="monotone"
+                dataKey="projectedValue"
+                stroke="#6366f1"
                 strokeWidth={3}
                 strokeDasharray="5 5"
-                fill="url(#colorProjected)" 
-                activeDot={{ r: 6, fill: '#6366f1' }}
+                fill="url(#colorProjected)"
+                activeDot={{ r: 6, fill: "#6366f1" }}
               />
             </AreaChart>
           </ResponsiveContainer>

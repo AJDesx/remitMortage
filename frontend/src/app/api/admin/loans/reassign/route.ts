@@ -41,6 +41,22 @@ export async function POST(request: NextRequest) {
     await Promise.all(
       applicationIds.map(async (id: string) => {
         try {
+          // Optimistic lock (issue #846): read the application first so the
+          // review targets the state we actually looked at. The backend
+          // rejects with 409 if it changes between this read and the write.
+          const currentRes = await fetch(`${backendUrl}/api/loan/${id}`, {
+            method: "GET",
+            headers: forwardedHeaders(request, false),
+          });
+          const current = await currentRes.json().catch(() => null);
+          if (!currentRes.ok || typeof current?.version !== "number") {
+            failures.push({
+              applicationId: id,
+              error: current?.error || current?.message || `HTTP ${currentRes.status}`,
+            });
+            return;
+          }
+
           const res = await fetch(`${backendUrl}/api/loan/${id}/review`, {
             method: "POST",
             headers: forwardedHeaders(request, true),
@@ -48,6 +64,7 @@ export async function POST(request: NextRequest) {
               reviewerId: targetReviewer,
               decision: "APPROVED",
               reason: reason || `Reassigned to reviewer ${targetReviewer}`,
+              expectedVersion: current.version,
             }),
           });
           if (res.ok) {

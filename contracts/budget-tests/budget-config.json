@@ -1,0 +1,16 @@
+{
+  "_comment": "Budget regression configuration. See docs/CONTRACT_BUDGET_REGRESSION.md.",
+  "tolerance_pct": 10,
+  "min_abs_cpu": 20000,
+  "min_abs_mem": 4096,
+  "warn_pct": 50,
+  "fail_pct": 80,
+  "network_limits": {
+    "cpu_instructions": 100000000,
+    "memory_bytes": 41943040
+  },
+  "limit_exceptions": {
+    "multisig-validator::mark_missed_votes#worst": "Known issue: cost is O(expired_ids x signers) with no cap on the id list; 30 ids x 50 signers exceeds the 100M CPU limit natively. Cap the batch or chunk the call, then remove this exception."
+  },
+  "exemptions": {}
+}

@@ -218,7 +218,7 @@ export async function applyDueServicingTransfers(now: Date = new Date()): Promis
     await prisma.$transaction([
       prisma.loanApplication.update({
         where: { id: transfer.loanApplicationId },
-        data: { servicer: transfer.toServicer, servicerContact: transfer.toServicerContact },
+        data: { servicer: transfer.toServicer, servicerContact: transfer.toServicerContact, version: { increment: 1 } },
       }),
       prisma.loanServicingTransfer.update({
         where: { id: transfer.id },

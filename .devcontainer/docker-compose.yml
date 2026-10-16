@@ -1,0 +1,60 @@
+# Dev container services (issue #878).
+#
+# `workspace` is the developer container (built from .devcontainer/Dockerfile);
+# `postgres` and `redis` are the backing services it depends on, started with
+# the same credentials the backend expects so no host configuration is needed.
+
+services:
+  workspace:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    command: sleep infinity
+    init: true
+    volumes:
+      - ..:/workspaces/remitMortgage:cached
+    environment:
+      DATABASE_URL: postgresql://remituser:remitpass@postgres:5432/remitmortgage?schema=public
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: development
+    ports:
+      - "3000:3000"
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: remituser
+      POSTGRES_PASSWORD: remitpass
+      POSTGRES_DB: remitmortgage
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U remituser -d remitmortgage"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:
+  redis-data:

@@ -1,0 +1,132 @@
+# Prometheus alerting rules for DNS health-checked failover (issue #876).
+#
+# Load alongside the existing rule files, e.g.:
+#
+#   # prometheus.yml
+#   rule_files:
+#     - /etc/prometheus/rules/dns-failover-alerts.yml
+#
+# Or, under the Prometheus Operator, wrap `groups` below in a PrometheusRule
+# custom resource.
+#
+# These rules sit on top of two existing signals:
+#
+#   * Blackbox exporter probes (`probe_success`) of the failover hostname,
+#     labelled `job="synthetic-monitor"` — see synthetic-monitoring.yml.
+#   * CloudWatch metrics scraped by cloudwatch_exporter for the Route 53
+#     health checks (`aws_route53_health_check_status_average`), labelled with
+#     the `health_check_id`/`health_check_type` the Terraform module exports.
+#
+# Recovery-time target: ≤ 120s (detection 30s + resolver TTL 30s + margin),
+# sourced from devops/terraform/dns-failover and docs/DNS_FAILOVER_RUNBOOK.md.
+
+groups:
+  - name: remitmortgage-dns-failover
+    interval: 30s
+    rules:
+      # ── Primary health check is failing ───────────────────────────────────
+      # Route 53 has (or is about to) fail `record_name` over to the secondary
+      # endpoint. This is the failover event itself.
+      - alert: DnsPrimaryEndpointUnhealthy
+        expr: |
+          min_over_time(
+            aws_route53_health_check_status_average{health_check_type="primary"}[5m]
+          ) < 1
+        for: 1m
+        labels:
+          severity: critical
+          team: ops
+          component: dns
+        annotations:
+          summary: >-
+            Primary DNS endpoint for {{ $labels.record_name }} is unhealthy.
+          description: >-
+            The Route 53 health check for the primary endpoint has been failing
+            for at least 1 minute. Route 53 will serve the secondary failover
+            record. Confirm the failover actually restored traffic (see
+            DnsFailoverRestored below) and start regional recovery.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/DNS_FAILOVER_RUNBOOK.md
+
+      # ── Failover did not restore service within the RTO ───────────────────
+      # The primary is down AND the public hostname is still unhealthy after
+      # the documented RTO. This is the "failover failed to shift traffic"
+      # page — the exact scenario the drill exists to catch.
+      - alert: DnsFailoverDidNotRestoreWithinRto
+        expr: |
+          (
+            min_over_time(
+              aws_route53_health_check_status_average{health_check_type="primary"}[5m]
+            ) < 1
+          )
+          and
+          (
+            min_over_time(
+              probe_success{job="synthetic-monitor", endpoint="/api/health"}[2m]
+            ) == 0
+          )
+        for: 1m
+        labels:
+          severity: page
+          team: ops
+          component: dns
+        annotations:
+          summary: >-
+            Failover for {{ $labels.instance }} has not restored service within
+            the 120s RTO.
+          description: >-
+            The primary endpoint is unhealthy and synthetic probes to the
+            public hostname are still failing more than 2 minutes later. Either
+            the secondary record is not healthy or resolvers are serving a
+            stale primary. Follow the manual failover steps in the runbook
+            immediately.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/DNS_FAILOVER_RUNBOOK.md
+
+      # ── Secondary is also unhealthy: no failover target remains ───────────
+      - alert: DnsFailoverTargetUnhealthy
+        expr: |
+          min_over_time(
+            aws_route53_health_check_status_average{health_check_type="secondary"}[5m]
+          ) < 1
+        for: 1m
+        labels:
+          severity: critical
+          team: ops
+          component: dns
+        annotations:
+          summary: >-
+            Secondary DNS endpoint for {{ $labels.record_name }} is unhealthy.
+          description: >-
+            With the secondary down there is no healthy failover target. Any
+            primary failure now becomes a full outage. Prioritise restoring the
+            secondary region.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/DNS_FAILOVER_RUNBOOK.md
+
+      # ── Failback completed ────────────────────────────────────────────────
+      # Informational so the on-call team knows traffic returned to the
+      # primary and can stand down.
+      - alert: DnsFailbackCompleted
+        expr: |
+          min_over_time(
+            aws_route53_health_check_status_average{health_check_type="primary"}[5m]
+          ) >= 1
+          and
+          (
+            max_over_time(
+              aws_route53_health_check_status_average{health_check_type="primary"}[30m]
+              offset 5m
+            ) < 1
+          )
+        for: 1m
+        labels:
+          severity: info
+          team: ops
+          component: dns
+        annotations:
+          summary: >-
+            Traffic for {{ $labels.record_name }} has failed back to the
+            primary endpoint.
+          description: >-
+            The primary endpoint is healthy again and Route 53 has resumed
+            serving it. Confirm the runbook's post-failback checklist is
+            complete.
+          runbook_url: https://github.com/AstronLabs/remitMortage/blob/main/docs/DNS_FAILOVER_RUNBOOK.md
