@@ -560,6 +560,10 @@ export async function createVerificationResult(data: {
   totalVolume: number;
   spanMonths: number;
   eligible: boolean;
+  score?: number;
+  modelVersion?: string;
+  scoreBreakdown?: Record<string, number>;
+  scoreReasons?: unknown;
 }) {
   return prisma.verificationResult.create({ data });
 }

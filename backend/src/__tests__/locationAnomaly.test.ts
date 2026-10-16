@@ -18,10 +18,58 @@ import {
 } from "../services/locationAnomalyService";
 import { _setEntry } from "../services/challengeStore";
 
-jest.mock("../services/db.js", () => ({
-  upsertApplicant: jest.fn().mockResolvedValue({ id: "applicant-1" }),
-  createVerificationResult: jest.fn().mockResolvedValue({ id: "verification-1" }),
-}));
+// Login location history is persisted via prisma.loginLocationHistory, so
+// the db module mock needs a working (if fake) implementation of it rather
+// than the bare jest.fn() stubs the other mocked exports use — tests below
+// record a login then immediately re-query it to evaluate the next one.
+// Each test uses its own distinct wallet address (existing convention), so
+// a single array shared across the whole file never leaks state between
+// tests — no explicit clearing is needed.
+jest.mock("../services/db.js", () => {
+  type FakeRow = {
+    walletAddress: string;
+    country: string;
+    latitude: number;
+    longitude: number;
+    loginAt: Date;
+  };
+  const rows: FakeRow[] = [];
+
+  return {
+    upsertApplicant: jest.fn().mockResolvedValue({ id: "applicant-1" }),
+    createVerificationResult: jest.fn().mockResolvedValue({ id: "verification-1" }),
+    getNotificationPreference: jest.fn().mockResolvedValue(null),
+    prisma: {
+      loginLocationHistory: {
+        create: jest.fn(async ({ data }: { data: FakeRow }) => {
+          const row = { ...data };
+          rows.push(row);
+          return row;
+        }),
+        findMany: jest.fn(
+          async ({
+            where,
+            orderBy,
+            take,
+          }: {
+            where: { walletAddress: string };
+            orderBy?: { loginAt: "asc" | "desc" };
+            take?: number;
+          }) => {
+            const matching = rows
+              .filter((r) => r.walletAddress === where.walletAddress)
+              .sort((a, b) =>
+                orderBy?.loginAt === "asc"
+                  ? a.loginAt.getTime() - b.loginAt.getTime()
+                  : b.loginAt.getTime() - a.loginAt.getTime()
+              );
+            return take ? matching.slice(0, take) : matching;
+          }
+        ),
+      },
+    },
+  };
+});
 
 jest.mock("../middleware/rateLimit.js", () => ({
   verificationChallengeRateLimiter: (
@@ -34,6 +82,15 @@ jest.mock("../middleware/rateLimit.js", () => ({
     _res: express.Response,
     next: express.NextFunction
   ) => next(),
+}));
+
+jest.mock("../services/email.js", () => ({
+  sendEmail: jest.fn().mockResolvedValue(true),
+  getBrandedHtml: jest.fn((_title: string, body: string) => body),
+}));
+
+jest.mock("../services/audit.js", () => ({
+  logAudit: jest.fn().mockResolvedValue(undefined),
 }));
 
 function signStellarChallenge(keypair: Keypair, challenge: string): string {
@@ -53,34 +110,81 @@ describe("Anomalous Location Detection Service", () => {
     expect(dist).toBeLessThan(6000);
   });
 
-  it("should evaluate initial login as trusted baseline", () => {
-    const result = evaluateLoginLocation("GAAA...", "1.1.1.1");
+  it("should evaluate initial login as trusted baseline", async () => {
+    const result = await evaluateLoginLocation("GAAA_BASELINE_TEST", "1.1.1.1");
     expect(result.isAnomalous).toBe(false);
     expect(result.requiresStepUp).toBe(false);
   });
 
-  it("should flag implausible travel speed jumps across locations", () => {
+  it("should flag implausible travel speed jumps across locations", async () => {
     const wallet = "GAAA_SPEED_TEST";
     const now = Date.now();
 
     // Baseline login in New York
-    recordLoginLocation(wallet, "1.1.1.1", now);
+    await recordLoginLocation(wallet, "1.1.1.1", now);
 
     // Login attempt from London 5 minutes later
-    const result = evaluateLoginLocation(wallet, "2.2.2.2", now + 5 * 60 * 1000);
+    const result = await evaluateLoginLocation(wallet, "2.2.2.2", now + 5 * 60 * 1000);
     expect(result.isAnomalous).toBe(true);
     expect(result.requiresStepUp).toBe(true);
     expect(result.reason).toContain("Implausible travel speed detected");
   });
 
-  it("should allow plausible location logins without step-up", () => {
+  it("should allow plausible location logins without step-up", async () => {
     const wallet = "GAAA_PLAUSIBLE_TEST";
     const now = Date.now();
 
-    recordLoginLocation(wallet, "1.1.1.1", now);
+    await recordLoginLocation(wallet, "1.1.1.1", now);
 
     // Login from same location 1 hour later
-    const result = evaluateLoginLocation(wallet, "10.0.1.5", now + 60 * 60 * 1000);
+    const result = await evaluateLoginLocation(wallet, "10.0.1.5", now + 60 * 60 * 1000);
+    expect(result.isAnomalous).toBe(false);
+    expect(result.requiresStepUp).toBe(false);
+  });
+
+  it("should tolerate VPN-style noise: a moderate jump within the same country is not flagged", async () => {
+    const wallet = "GAAA_VPN_NOISE_TEST";
+    const now = Date.now();
+
+    // Baseline login in New York.
+    await recordLoginLocation(wallet, "1.1.1.1", now);
+
+    // A different exit IP ~130km away (Philadelphia) an hour later — the
+    // kind of jump a VPN or mobile-network IP reassignment produces. Same
+    // country, well within plausible travel speed: must not be flagged.
+    const result = await evaluateLoginLocation(wallet, "5.5.5.5", now + 60 * 60 * 1000);
+    expect(result.isAnomalous).toBe(false);
+    expect(result.requiresStepUp).toBe(false);
+  });
+
+  it("should flag a first login from a new country even after a long, speed-plausible gap", async () => {
+    const wallet = "GAAA_NEW_COUNTRY_SLOW_TEST";
+    const now = Date.now();
+
+    // Baseline login in New York.
+    await recordLoginLocation(wallet, "1.1.1.1", now);
+
+    // London, 10 hours later: ~557 km/h, well under the implausible-speed
+    // threshold (800 km/h) — a legitimate-looking trip. It's still the
+    // account's first-ever login from the UK, so it must still be flagged;
+    // novelty of the country doesn't depend on how fast the trip was.
+    const result = await evaluateLoginLocation(wallet, "2.2.2.2", now + 10 * 60 * 60 * 1000);
+    expect(result.calculatedSpeedKmH).toBeLessThan(800);
+    expect(result.isAnomalous).toBe(true);
+    expect(result.requiresStepUp).toBe(true);
+    expect(result.reason).toContain("unfamiliar country");
+  });
+
+  it("should not flag a login from a country already seen in history", async () => {
+    const wallet = "GAAA_KNOWN_COUNTRY_TEST";
+    const now = Date.now();
+
+    // Two prior logins in the US (NY, then Philadelphia-ish via 10.0.1.x).
+    await recordLoginLocation(wallet, "1.1.1.1", now);
+    await recordLoginLocation(wallet, "10.0.1.9", now + 60 * 60 * 1000);
+
+    // A third US login, still plausible speed: known country, not flagged.
+    const result = await evaluateLoginLocation(wallet, "1.1.1.1", now + 2 * 60 * 60 * 1000);
     expect(result.isAnomalous).toBe(false);
     expect(result.requiresStepUp).toBe(false);
   });
@@ -142,7 +246,7 @@ describe("Anomalous Login Location & Step-Up Endpoints Integration", () => {
     const walletAddress = keypair.publicKey();
 
     // Register initial baseline login in NY
-    recordLoginLocation(walletAddress, "1.1.1.1", Date.now());
+    await recordLoginLocation(walletAddress, "1.1.1.1", Date.now());
 
     const challenge = "RemitMortgage-verify-anomalous";
     _setEntry(walletAddress, {

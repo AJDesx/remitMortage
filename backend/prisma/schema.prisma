@@ -250,6 +250,21 @@ model VerificationResult {
   eligible       Boolean
   analyzedAt     DateTime  @default(now())
 
+  /// The computed credit score (0-100), stored alongside the inputs above so
+  /// a past verification's score is reproducible without re-running
+  /// `calculateCreditScore` against possibly-changed scoring weights.
+  score          Int?
+  /// The scoring model version active when this score was computed
+  /// (`ScoringModelConfig.activeVersion`, e.g. "v1.0.0").
+  modelVersion   String?
+  /// Per-factor point breakdown (consistency/frequency/duration/volume),
+  /// mirroring `CreditScoreResult.breakdown`.
+  scoreBreakdown Json?
+  /// The stable reason codes + plain-language text behind the score
+  /// (`CreditScoreResult.reasons`), so an adverse-decision notice or the
+  /// reviewer view can show *why* without recomputing anything.
+  scoreReasons   Json?
+
   // Index backing getApplicant() which orders verificationResults by analyzedAt desc
   @@index([applicantId, analyzedAt])
   // Supports eligibility-filtered queries and analytics scans
@@ -654,6 +669,24 @@ enum SuspiciousActivityStatus {
   CONFIRMED
 }
 
+/// Coarse-only login location history, used for geo-IP anomaly detection
+/// (impossible travel, first-login-from-new-country). Deliberately omits the
+/// IP address, city, or any field finer-grained than country + rounded
+/// lat/lon — only enough precision to compute travel distance, never a
+/// precise location.
+model LoginLocationHistory {
+  id            String   @id @default(uuid())
+  walletAddress String
+  country       String
+  /// Rounded to ~1 decimal degree (~11km) at write time — coarse by
+  /// construction, not just by convention.
+  latitude      Float
+  longitude     Float
+  loginAt       DateTime @default(now())
+
+  @@index([walletAddress, loginAt])
+}
+
 model LoanDisbursement {
   id          String   @id @default(uuid())
   borrower    Borrower @relation(fields: [borrowerId], references: [id])
@@ -865,8 +898,14 @@ model ApiKey {
   name      String
   scopes    String[]
   revoked   Boolean  @default(false)
+  /// Billing plan identifier. Resolves this key's request quota per billing
+  /// period via the API_KEY_QUOTA_BY_PLAN env var (see apiKeyQuota.ts).
+  /// Unrecognized/unset plans fall back to API_KEY_QUOTA_DEFAULT.
+  plan      String   @default("default")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  usage     ApiKeyUsage[]
 
   @@index([key])
   @@index([revoked])
