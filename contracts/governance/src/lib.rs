@@ -3,7 +3,8 @@
 
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Map, Vec,
+    contract, contractimpl, contracttype, symbol_short, Address, Bytes, Env, IntoVal, Map, Symbol,
+    Vec,
 };
 
 #[contracttype]
@@ -22,6 +23,15 @@ pub struct GovernanceConfig {
     pub guardian: Address,
     pub signers: Vec<Address>,
     pub quorum_bps: u32, // Quorum in basis points, e.g. 6000 = 60%
+    /// Address of the StakingPool contract used to resolve a proposer's
+    /// stake at submission time. `None` disables the minimum-stake check
+    /// entirely, preserving unrestricted submission. Set via
+    /// `set_staking_pool`.
+    pub staking_pool: Option<Address>,
+    /// Minimum stake (in the StakingPool's share units) a proposer must
+    /// hold to submit a new proposal. `0` — the deployment default —
+    /// disables the check entirely. Set via `set_min_stake_to_submit`.
+    pub min_stake_to_submit: i128,
 }
 
 #[contracttype]
@@ -75,6 +85,8 @@ impl GovernanceContract {
             guardian,
             signers,
             quorum_bps,
+            staking_pool: None,
+            min_stake_to_submit: 0,
         };
 
         env.storage().instance().set(&DataKey::Config, &config);
@@ -98,6 +110,22 @@ impl GovernanceContract {
         }
         if !config.signers.contains(&proposer) {
             panic!("Address is not a registered signer");
+        }
+
+        // A configured minimum stake makes spam or nuisance proposals
+        // costly: once `min_stake_to_submit` is above `0` (the deployment
+        // default, which leaves the check off), a proposer must hold at
+        // least that much in the configured StakingPool to submit. Raising
+        // or lowering the minimum only ever affects submissions made after
+        // the change — proposals already on record are never re-validated.
+        if config.min_stake_to_submit > 0 {
+            let stake = match &config.staking_pool {
+                Some(staking_pool) => Self::read_proposer_stake(&env, staking_pool, &proposer),
+                None => 0,
+            };
+            if stake < config.min_stake_to_submit {
+                panic!("Proposer stake is below the configured minimum");
+            }
         }
 
         let last_id: u32 = env
@@ -401,6 +429,64 @@ impl GovernanceContract {
         env.storage()
             .instance()
             .get(&DataKey::Proposal(proposal_id))
+    }
+
+    /// Admin-only: sets the StakingPool contract address used to resolve a
+    /// proposer's stake at submission time.
+    pub fn set_staking_pool(env: Env, admin: Address, staking_pool: Address) {
+        let mut config = Self::get_config(env.clone());
+        admin.require_auth();
+        if admin != config.admin {
+            panic!("Address is not the admin");
+        }
+        config.staking_pool = Some(staking_pool);
+        env.storage().instance().set(&DataKey::Config, &config);
+    }
+
+    /// View function returning the configured StakingPool address, if any.
+    pub fn get_staking_pool(env: Env) -> Option<Address> {
+        Self::get_config(env).staking_pool
+    }
+
+    /// Admin-only: sets the minimum stake a proposer must hold to submit a
+    /// new proposal. `0` disables the check. Only submissions made after
+    /// this call are affected — proposals already submitted keep whatever
+    /// decision was made under the previous minimum.
+    pub fn set_min_stake_to_submit(env: Env, admin: Address, min_stake: i128) {
+        let mut config = Self::get_config(env.clone());
+        admin.require_auth();
+        if admin != config.admin {
+            panic!("Address is not the admin");
+        }
+        if min_stake < 0 {
+            panic!("Minimum stake cannot be negative");
+        }
+        config.min_stake_to_submit = min_stake;
+        env.storage().instance().set(&DataKey::Config, &config);
+    }
+
+    /// View function returning the configured minimum stake to submit.
+    pub fn get_min_stake_to_submit(env: Env) -> i128 {
+        Self::get_config(env).min_stake_to_submit
+    }
+
+    /// Cross-contract call to `<staking_pool>.get_shares(proposer)`, mirroring
+    /// the typed StakingPool client call via raw `env.try_invoke_contract` so
+    /// this crate never depends on the staking-pool crate directly (the same
+    /// pattern the lending-pool contract uses for its own cross-contract
+    /// calls). Returns `0` on any invocation or application error, which — on
+    /// the `stake < min_stake_to_submit` comparison in `submit_proposal` —
+    /// fails closed rather than silently waiving the check.
+    fn read_proposer_stake(env: &Env, staking_pool: &Address, proposer: &Address) -> i128 {
+        let args = soroban_sdk::vec![env, proposer.into_val(env)];
+        match env.try_invoke_contract::<i128, soroban_sdk::Error>(
+            staking_pool,
+            &Symbol::new(env, "get_shares"),
+            args,
+        ) {
+            Ok(Ok(shares)) => shares,
+            _ => 0,
+        }
     }
 }
 
@@ -748,6 +834,146 @@ mod test {
         client.execute_proposal(&signer3, &proposal_id);
         let executed = client.get_proposal(&proposal_id).unwrap();
         assert_eq!(executed.status, ProposalStatus::Executed);
+    }
+
+    /// Minimal mock of the StakingPool contract's `get_shares` view, used to
+    /// test the minimum-stake gate on `submit_proposal` without depending on
+    /// the real staking-pool crate (same reasoning as the lending-pool's own
+    /// cross-contract mocks).
+    mod mock_staking_pool {
+        use super::*;
+
+        #[contract]
+        pub struct MockStakingPool;
+
+        #[contractimpl]
+        impl MockStakingPool {
+            pub fn set_shares(env: Env, staker: Address, shares: i128) {
+                env.storage().instance().set(&staker, &shares);
+            }
+
+            pub fn get_shares(env: Env, staker: Address) -> i128 {
+                env.storage().instance().get(&staker).unwrap_or(0)
+            }
+        }
+    }
+    use mock_staking_pool::{MockStakingPool, MockStakingPoolClient};
+
+    #[test]
+    fn test_submit_proposal_succeeds_at_or_above_min_stake() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let guardian = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(signer1.clone());
+
+        client.initialize(&admin, &guardian, &signers, &10000);
+
+        let staking_pool_id = env.register(MockStakingPool, ());
+        let staking_client = MockStakingPoolClient::new(&env, &staking_pool_id);
+        staking_client.set_shares(&signer1, &1_000i128);
+
+        client.set_staking_pool(&admin, &staking_pool_id);
+        client.set_min_stake_to_submit(&admin, &1_000i128);
+
+        let evidence_hash = Bytes::from_slice(&env, b"QmEvidenceHash");
+        let proposal_id = client.submit_proposal(&signer1, &1, &evidence_hash);
+        assert_eq!(proposal_id, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Proposer stake is below the configured minimum")]
+    fn test_submit_proposal_reverts_below_min_stake() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let guardian = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(signer1.clone());
+
+        client.initialize(&admin, &guardian, &signers, &10000);
+
+        let staking_pool_id = env.register(MockStakingPool, ());
+        let staking_client = MockStakingPoolClient::new(&env, &staking_pool_id);
+        staking_client.set_shares(&signer1, &500i128);
+
+        client.set_staking_pool(&admin, &staking_pool_id);
+        client.set_min_stake_to_submit(&admin, &1_000i128);
+
+        let evidence_hash = Bytes::from_slice(&env, b"QmEvidenceHash");
+        client.submit_proposal(&signer1, &1, &evidence_hash);
+    }
+
+    #[test]
+    fn test_min_stake_change_only_affects_subsequent_submissions() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let guardian = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(signer1.clone());
+
+        client.initialize(&admin, &guardian, &signers, &10000);
+
+        let staking_pool_id = env.register(MockStakingPool, ());
+        let staking_client = MockStakingPoolClient::new(&env, &staking_pool_id);
+        staking_client.set_shares(&signer1, &500i128);
+        client.set_staking_pool(&admin, &staking_pool_id);
+
+        // No minimum configured yet: submission succeeds with only 500 staked.
+        let evidence_hash = Bytes::from_slice(&env, b"QmEvidenceHash1");
+        let first_id = client.submit_proposal(&signer1, &1, &evidence_hash);
+        assert_eq!(first_id, 1);
+
+        // Raise the minimum above the signer's stake. The proposal already
+        // on record is untouched...
+        client.set_min_stake_to_submit(&admin, &1_000i128);
+        let first_proposal = client.get_proposal(&first_id).unwrap();
+        assert_eq!(first_proposal.status, ProposalStatus::Open);
+
+        // ...but a *new* submission from the same under-staked signer now reverts.
+        let evidence_hash_2 = Bytes::from_slice(&env, b"QmEvidenceHash2");
+        let result = client.try_submit_proposal(&signer1, &2, &evidence_hash_2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_min_stake_check_disabled_by_default() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let guardian = Address::generate(&env);
+        let signer1 = Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(signer1.clone());
+
+        client.initialize(&admin, &guardian, &signers, &10000);
+
+        // No staking pool and no minimum configured: existing permissionless
+        // behavior is preserved.
+        let evidence_hash = Bytes::from_slice(&env, b"QmEvidenceHash");
+        let proposal_id = client.submit_proposal(&signer1, &1, &evidence_hash);
+        assert_eq!(proposal_id, 1);
     }
 
     // ── Vote delegation ──────────────────────────────────────────────────

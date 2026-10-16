@@ -15,12 +15,15 @@ mod upgrade_migration_tests;
 #[cfg(test)]
 mod test_loan_assumption;
 
+#[cfg(test)]
+mod test_credit_line;
+
 pub use crate::errors::{LoanAssumptionError, PoolError};
 pub use crate::types::{
-    BatchDisburseItem, DataKey, FeatureKey, HalvingInfo, InvestorRecord, LoanAssumptionRequest,
-    LoanCollateralRecord, LoanPortabilitySnapshot, LoanRecord, LoanStatus, PauseGroup, PayoffQuote,
-    PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche,
-    TrancheInfo,
+    BatchDisburseItem, CreditLine, DataKey, FeatureKey, HalvingInfo, InvestorRecord,
+    LoanAssumptionRequest, LoanCollateralRecord, LoanPortabilitySnapshot, LoanRecord, LoanStatus,
+    PauseGroup, PayoffQuote, PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule,
+    RestructureProposal, Tranche, TrancheInfo,
 };
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
@@ -1162,6 +1165,43 @@ impl LendingPoolContract {
         loan.outstanding_debt =
             loan.outstanding_debt.saturating_mul(compound) / Self::INTEREST_SCALE;
         loan.last_interest_ledger = current;
+    }
+
+    /// Read a borrower's revolving credit line, if one has been opened.
+    fn read_credit_line(env: &Env, borrower: &Address) -> Option<CreditLine> {
+        env.storage()
+            .persistent()
+            .get(&FeatureKey::CreditLine(borrower.clone()))
+    }
+
+    fn set_credit_line(env: &Env, line: &CreditLine) {
+        env.storage()
+            .persistent()
+            .set(&FeatureKey::CreditLine(line.borrower.clone()), line);
+    }
+
+    /// Accrue compound interest on `line.drawn_balance` for the ledgers
+    /// elapsed since `line.last_interest_ledger`. Mirrors `accrue_interest`'s
+    /// fixed-point compounding exactly, so a revolving draw ages identically
+    /// to a one-shot loan — interest only ever compounds on the currently
+    /// drawn balance, never on unused approved capacity.
+    fn accrue_credit_interest(env: &Env, line: &mut CreditLine) {
+        let current = env.ledger().sequence();
+        if current <= line.last_interest_ledger || line.drawn_balance <= 0 {
+            line.last_interest_ledger = current;
+            return;
+        }
+        let elapsed = current - line.last_interest_ledger;
+        let periods = elapsed / Self::COMPOUND_PERIOD;
+        if periods == 0 {
+            return;
+        }
+        let factor = Self::INTEREST_SCALE
+            + (line.interest_rate_bps as i128 * Self::INTEREST_SCALE)
+                / (10_000 * Self::PERIODS_PER_YEAR);
+        let compound = Self::compound_pow(factor, periods);
+        line.drawn_balance = line.drawn_balance.saturating_mul(compound) / Self::INTEREST_SCALE;
+        line.last_interest_ledger = current;
     }
 
     fn check_not_paused(env: &Env) -> Result<(), PoolError> {
@@ -6711,6 +6751,186 @@ impl LendingPoolContract {
     /// been claimed.
     pub fn is_rebate_claimed_flag(env: Env, loan_id: BytesN<32>) -> bool {
         Self::is_rebate_claimed(&env, &loan_id)
+    }
+
+    // ── Revolving Credit Line ─────────────────────────────────────────────
+
+    /// Admin opens a revolving credit line for `borrower`, approving them
+    /// for up to `approved_limit`. The borrower may then draw and repay
+    /// repeatedly via `draw_credit` / `repay_credit` without re-applying for
+    /// a new loan, similar to a HELOC secured against their escrow position.
+    ///
+    /// Fails if a credit line already exists for this borrower
+    /// (`CreditLineAlreadyExists`) — raise the existing line's limit instead
+    /// of opening a second one.
+    pub fn open_credit_line(
+        env: Env,
+        borrower: Address,
+        approved_limit: i128,
+        interest_rate_bps: u32,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+
+        if approved_limit <= 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+        if Self::read_credit_line(&env, &borrower).is_some() {
+            return Err(PoolError::CreditLineAlreadyExists);
+        }
+
+        let current_ledger = env.ledger().sequence();
+        let line = CreditLine {
+            borrower: borrower.clone(),
+            approved_limit,
+            drawn_balance: 0,
+            interest_rate_bps,
+            opened_ledger: current_ledger,
+            last_interest_ledger: current_ledger,
+        };
+        Self::set_credit_line(&env, &line);
+
+        // Reserve the full limit against pool liquidity, mirroring how
+        // `approve_loan` reserves a loan's undisbursed principal — an
+        // approved-but-undrawn line still commits the pool to honor it.
+        let active_commitments = Self::read_active_commitments(&env);
+        env.storage().instance().set(
+            &DataKey::ActiveLoanCommitments,
+            &(active_commitments + approved_limit),
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "credit_opened"),),
+            (borrower, approved_limit, interest_rate_bps),
+        );
+
+        Ok(())
+    }
+
+    /// Borrower draws `amount` against their approved credit line. Interest
+    /// accrues only on the resulting `drawn_balance`, never on the unused
+    /// portion of the approved limit.
+    ///
+    /// Fails if the draw would push `drawn_balance` past `approved_limit`
+    /// (`CreditLimitExceeded`) or the pool lacks the liquidity to fund it
+    /// (`InsufficientLiquidity`).
+    pub fn draw_credit(env: Env, borrower: Address, amount: i128) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        if amount <= 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+        borrower.require_auth();
+
+        let config = Self::read_config(&env)?;
+        Self::non_reentrant(&env, || {
+            let mut line = Self::read_credit_line(&env, &borrower)
+                .ok_or(PoolError::CreditLineNotFound)?;
+
+            // Accrue before checking capacity so a draw against a line that
+            // has been accruing for a while is measured against the true
+            // current balance, not a stale one.
+            Self::accrue_credit_interest(&env, &mut line);
+
+            let available = line.approved_limit - line.drawn_balance;
+            if amount > available {
+                return Err(PoolError::CreditLimitExceeded);
+            }
+
+            let liquidity = Self::read_total_liquidity(&env);
+            if liquidity < amount {
+                return Err(PoolError::InsufficientLiquidity);
+            }
+
+            let token = Self::token_client(&env, &config.token);
+            token.transfer(&env.current_contract_address(), &borrower, &amount);
+
+            line.drawn_balance += amount;
+            Self::set_credit_line(&env, &line);
+
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalLiquidity, &(liquidity - amount));
+
+            let active_commitments = Self::read_active_commitments(&env);
+            env.storage().instance().set(
+                &DataKey::ActiveLoanCommitments,
+                &(active_commitments - amount),
+            );
+
+            env.storage()
+                .instance()
+                .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+            env.events().publish(
+                (Symbol::new(&env, "credit_drawn"),),
+                (borrower.clone(), amount, line.drawn_balance),
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Borrower repays `amount` against their drawn credit line balance.
+    /// Interest is accrued first, then the payment is applied to
+    /// `drawn_balance`, freeing that capacity for a future draw back up to
+    /// `approved_limit`. Repaying more than the outstanding balance fails
+    /// explicitly (`OverPayment`) rather than silently capping the payment.
+    pub fn repay_credit(env: Env, borrower: Address, amount: i128) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        if amount <= 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+        borrower.require_auth();
+
+        let config = Self::read_config(&env)?;
+        let mut line =
+            Self::read_credit_line(&env, &borrower).ok_or(PoolError::CreditLineNotFound)?;
+
+        Self::accrue_credit_interest(&env, &mut line);
+
+        if amount > line.drawn_balance {
+            return Err(PoolError::OverPayment);
+        }
+
+        let token = Self::token_client(&env, &config.token);
+        token.transfer(&borrower, &env.current_contract_address(), &amount);
+
+        line.drawn_balance -= amount;
+        Self::set_credit_line(&env, &line);
+
+        // Repayment both returns liquidity to the pool and reopens the
+        // repaid capacity for a future draw, up to the approved limit.
+        let liquidity = Self::read_total_liquidity(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalLiquidity, &(liquidity + amount));
+
+        let active_commitments = Self::read_active_commitments(&env);
+        env.storage().instance().set(
+            &DataKey::ActiveLoanCommitments,
+            &(active_commitments + amount),
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        env.events().publish(
+            (Symbol::new(&env, "credit_repaid"),),
+            (borrower, amount, line.drawn_balance),
+        );
+
+        Ok(())
+    }
+
+    /// Returns the borrower's revolving credit line, if one has been opened.
+    pub fn get_credit_line(env: Env, borrower: Address) -> Option<CreditLine> {
+        Self::read_credit_line(&env, &borrower)
     }
 }
 

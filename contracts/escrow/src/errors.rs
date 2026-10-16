@@ -87,4 +87,6 @@ pub enum EscrowError {
     InvalidBeneficiaryShares = 39,
     /// Beneficiary list exceeds the maximum allowed number of recipients.
     BeneficiaryListTooLarge = 40,
+    /// No pending attestor-threshold change exists to apply or cancel.
+    AttestorChangeProposalNotPending = 41,
 }

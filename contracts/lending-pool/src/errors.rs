@@ -115,6 +115,13 @@ pub enum PoolError {
     GovernanceProposalNotPassed = 59,
     /// Injection amount exceeds the configured percentage cap of insurance reserves.
     EmergencyInjectionCapExceeded = 60,
+    /// A credit line already exists for this borrower.
+    CreditLineAlreadyExists = 61,
+    /// No credit line exists for this borrower.
+    CreditLineNotFound = 62,
+    /// Draw would exceed the approved credit limit minus the outstanding
+    /// drawn balance.
+    CreditLimitExceeded = 63,
 }
 
 #[contracterror]

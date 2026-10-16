@@ -4,11 +4,13 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import {
   ArrowRight, BadgeCheck, Banknote, Building2, Check, CircleDollarSign,
-  Clock3, FileCheck2, Landmark, LockKeyhole, ShieldCheck, Sparkles,
+  Clock3, FileCheck2, Landmark, LockKeyhole, PlayCircle, ShieldCheck, Sparkles,
   TrendingUp, WalletCards,
 } from "lucide-react";
+import { useDemoMode } from "../context/DemoModeContext";
 
 const Navbar = dynamic(() => import("../components/Navbar"), { ssr: false });
 
@@ -39,6 +41,14 @@ function ProgressRing() {
 }
 
 export default function HomePage() {
+  const router = useRouter();
+  const { enterDemoMode } = useDemoMode();
+
+  function handleTryDemo() {
+    enterDemoMode();
+    router.push("/dashboard");
+  }
+
   return (
     <main className="rm-home">
       <Navbar />
@@ -50,7 +60,9 @@ export default function HomePage() {
             <p className="rm-hero-lead">Turn a proven remittance history into transparent property financing, from your first escrow deposit to the final construction milestone.</p>
             <div className="rm-hero-actions">
               <Link href="/onboarding" className="rm-button rm-button-primary">Check your eligibility <ArrowRight size={17} /></Link>
-              <Link href="/dashboard" className="rm-button rm-button-secondary">Open dashboard</Link>
+              <button type="button" onClick={handleTryDemo} className="rm-button rm-button-secondary">
+                <PlayCircle size={17} /> Try demo
+              </button>
             </div>
             <div className="rm-trust-row">
               <span><Check size={15} /> No bank credit file required</span>
