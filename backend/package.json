@@ -10,6 +10,7 @@
     "docs:export": "tsx src/docs/export-openapi.ts",
     "test": "jest",
     "test:coverage": "jest --coverage",
+    "test:mutation": "stryker run",
     "test:security": "jest src/__tests__/sessionFixationAndReplay.test.ts",
     "test:integration": "jest --testPathPattern='prismaSchemaDrift' --no-coverage",
     "test:drift": "jest src/__tests__/prismaSchemaDrift.test.ts --no-coverage",
@@ -72,6 +73,8 @@
   },
   "devDependencies": {
     "@sentry/cli": "^3.6.2",
+    "@stryker-mutator/core": "~10.0.0",
+    "@stryker-mutator/jest-runner": "~10.0.0",
     "@types/bs58": "^4.0.4",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
