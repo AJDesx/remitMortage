@@ -46,9 +46,7 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
-
-      # On a PR that only touches the monitor's own inputs, just prove the
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 On a PR that only touches the monitor's own inputs, just prove the
       # domain list still parses — PRs cannot reach production endpoints and
       # the placeholder list is intentionally unresolvable.
       - name: Validate Domain List (pull request)
@@ -64,7 +62,7 @@ jobs:
         # Keep the report either way — a passing run is the audit record that
         # certificates were verified today.
         if: always() && github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tls-cert-expiry-report
           path: ${{ env.TLS_CERT_REPORT_PATH }}
@@ -74,7 +72,7 @@ jobs:
       # surfaces on the PR itself and needs no page.
       - name: Email Alert on Certificate Approaching Expiry
         if: failure() && steps.check.outcome == 'failure' && github.event_name != 'pull_request'
-        uses: dawidd6/action-send-mail@v3
+        uses: dawidd6/action-send-mail@4226df7daafa6fc901a43789c49bf7ab309066e7 # v3
         with:
           server_address: ${{ secrets.ALERT_SMTP_SERVER }}
           server_port: ${{ secrets.ALERT_SMTP_PORT }}

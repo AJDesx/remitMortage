@@ -1,6 +1,13 @@
 version: '3.8'
 
 services:
+  clamav:
+    image: clamav/clamav:1.4.3
+    container_name: remitmortgage-clamav
+    expose:
+      - "3310"
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     container_name: remitmortgage-postgres
@@ -110,6 +117,8 @@ services:
       HORIZON_URL: http://stellar-quickstart:8000
       REDIS_CLUSTER_ENABLED: "true"
       REDIS_CLUSTER_NODES: redis-cluster-node-1:6379,redis-cluster-node-2:6379,redis-cluster-node-3:6379
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
     ports:
       - "4000:4000"
     depends_on:
@@ -117,6 +126,8 @@ services:
         condition: service_completed_successfully
       redis-cluster-init:
         condition: service_completed_successfully
+      clamav:
+        condition: service_started
     restart: unless-stopped
 
   stellar-quickstart:
