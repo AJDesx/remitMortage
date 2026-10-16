@@ -172,4 +172,30 @@ pub enum DataKey {
     Whitelist(Address),
     /// Recurring auto-deposit schedule for a borrower's goal.
     AutoDeposit(Address, Symbol),
+    /// Pending or resolved hardship withdrawal request, keyed by borrower and goal.
+    HardshipRequest(Address, Symbol),
+    /// Ledgers after a hardship request within which the admin must approve
+    /// it, or it expires. `0` falls back to `DEFAULT_HARDSHIP_WINDOW_LEDGERS`.
+    HardshipApprovalWindowLedgers,
+    /// Maximum cumulative principal (not accrued yield) a single
+    /// borrower/goal may withdraw penalty-free via hardship withdrawal
+    /// within one `HardshipPeriodLedgers` window. `0` disables the cap.
+    HardshipCapPerPeriod,
+    /// Length, in ledgers, of one hardship-withdrawal cap period.
+    HardshipPeriodLedgers,
+    /// Cumulative hardship principal withdrawn by a borrower/goal within a
+    /// specific period index (`current_ledger / HardshipPeriodLedgers`).
+    HardshipWithdrawnInPeriod(Address, Symbol, u32),
+}
+
+/// A borrower's hardship withdrawal request: a hash of the supporting
+/// reason/document (never the document itself), awaiting admin approval
+/// within a configurable window before it can be executed penalty-free.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HardshipWithdrawalRequest {
+    pub reason_hash: BytesN<32>,
+    pub requested_at_ledger: u32,
+    pub approved: bool,
+    pub approver: Option<Address>,
 }

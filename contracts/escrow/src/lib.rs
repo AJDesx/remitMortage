@@ -29,13 +29,17 @@ mod test_auto_deposit;
 #[cfg(test)]
 mod test_goal_consolidation;
 
+#[cfg(test)]
+mod test_hardship_withdrawal;
+
 pub use crate::errors::EscrowError;
 use crate::token_utils::get_token_client;
 use crate::types::DataKey;
 pub use crate::types::{
-    AutoDepositSchedule, BorrowerRecord, EscrowConfig, PendingPenaltyProposal, PendingUpgradeRecord,
+    AutoDepositSchedule, BorrowerRecord, EscrowConfig, HardshipWithdrawalRequest,
+    PendingPenaltyProposal, PendingUpgradeRecord,
 };
-use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, IntoVal, Symbol};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, IntoVal, Symbol};
 
 // Fallback TTL values, used only before `initialize` has stored a config.
 // Live values come from EscrowConfig so each network can be tuned separately.
@@ -43,6 +47,11 @@ const DEFAULT_INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const DEFAULT_INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 const DEFAULT_PERSISTENT_BUMP_AMOUNT: u32 = 518_400; // ~30 days
 const DEFAULT_PERSISTENT_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
+
+/// Default window, in ledgers, within which an admin must approve a
+/// hardship withdrawal request before it expires (~7 days at production
+/// ledger time). Admin-configurable via `set_hardship_approval_window_ledgers`.
+const DEFAULT_HARDSHIP_WINDOW_LEDGERS: u32 = 120_960;
 
 // Use a small constant in tests so ledger advances stay well within instance TTL.
 #[cfg(not(test))]
@@ -706,6 +715,297 @@ impl EscrowContract {
             env.events().publish(
                 (symbol_short!("withdraw"), goal_id.clone()),
                 (borrower.clone(), refund, penalty),
+            );
+
+            Ok(refund)
+        }) // non_reentrant
+    }
+
+    // ── Admin-Approved Hardship Withdrawal ───────────────────────────────
+
+    fn hardship_approval_window_ledgers(env: &Env) -> u32 {
+        let stored: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::HardshipApprovalWindowLedgers)
+            .unwrap_or(0);
+        if stored == 0 {
+            DEFAULT_HARDSHIP_WINDOW_LEDGERS
+        } else {
+            stored
+        }
+    }
+
+    fn hardship_period_ledgers(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::HardshipPeriodLedgers)
+            .unwrap_or(LEDGERS_PER_MONTH)
+    }
+
+    fn hardship_cap_per_period(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::HardshipCapPerPeriod)
+            .unwrap_or(0i128)
+    }
+
+    /// Admin configures the hardship withdrawal window, per-period cap, and
+    /// period length. Pass `0` for `approval_window_ledgers` to fall back to
+    /// `DEFAULT_HARDSHIP_WINDOW_LEDGERS`; pass `0` for `cap_per_period` to
+    /// disable the cap entirely; `period_ledgers` of `0` falls back to one
+    /// month.
+    pub fn set_hardship_config(
+        env: Env,
+        approval_window_ledgers: u32,
+        cap_per_period: i128,
+        period_ledgers: u32,
+    ) -> Result<(), EscrowError> {
+        let config = Self::get_config(&env)?;
+        config.admin.require_auth();
+
+        if cap_per_period < 0 {
+            return Err(EscrowError::InvalidAmount);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::HardshipApprovalWindowLedgers, &approval_window_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::HardshipCapPerPeriod, &cap_per_period);
+        env.storage().instance().set(
+            &DataKey::HardshipPeriodLedgers,
+            &if period_ledgers == 0 {
+                LEDGERS_PER_MONTH
+            } else {
+                period_ledgers
+            },
+        );
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Borrower requests a hardship withdrawal, carrying `reason_hash` — a
+    /// hash of the off-chain supporting reason or document, never the
+    /// document itself. The request is not actionable until an admin calls
+    /// `approve_hardship_withdrawal`, and expires if that doesn't happen
+    /// within the configured window.
+    pub fn request_hardship_withdrawal(
+        env: Env,
+        borrower: Address,
+        goal_id: Symbol,
+        reason_hash: BytesN<32>,
+    ) -> Result<(), EscrowError> {
+        borrower.require_auth();
+
+        let record = Self::get_borrower(&env, &borrower, &goal_id);
+        if record.deposited == 0 {
+            return Err(EscrowError::BorrowerNotFound);
+        }
+        if record.released {
+            return Err(EscrowError::AlreadyReleased);
+        }
+        if record.withdrawn {
+            return Err(EscrowError::AlreadyWithdrawn);
+        }
+        if record.seized {
+            return Err(EscrowError::AlreadySeized);
+        }
+
+        let key = DataKey::HardshipRequest(borrower.clone(), goal_id.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(EscrowError::HardshipRequestAlreadyExists);
+        }
+
+        let request = HardshipWithdrawalRequest {
+            reason_hash: reason_hash.clone(),
+            requested_at_ledger: env.ledger().sequence(),
+            approved: false,
+            approver: None,
+        };
+        env.storage().persistent().set(&key, &request);
+
+        env.events().publish(
+            (symbol_short!("hs_req"), goal_id.clone()),
+            (borrower.clone(), reason_hash),
+        );
+
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Admin approves a pending hardship withdrawal request. Fails with
+    /// `HardshipRequestExpired` (and clears the request) if the approval
+    /// window has already elapsed — an admin cannot "late-approve" a
+    /// request past its window; the borrower must submit a fresh one.
+    pub fn approve_hardship_withdrawal(
+        env: Env,
+        borrower: Address,
+        goal_id: Symbol,
+    ) -> Result<(), EscrowError> {
+        let config = Self::get_config(&env)?;
+        config.admin.require_auth();
+
+        let key = DataKey::HardshipRequest(borrower.clone(), goal_id.clone());
+        let mut request: HardshipWithdrawalRequest = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(EscrowError::HardshipRequestNotFound)?;
+
+        let window = Self::hardship_approval_window_ledgers(&env);
+        let current_ledger = env.ledger().sequence();
+        if current_ledger > request.requested_at_ledger + window {
+            env.storage().persistent().remove(&key);
+            return Err(EscrowError::HardshipRequestExpired);
+        }
+
+        request.approved = true;
+        request.approver = Some(config.admin.clone());
+        env.storage().persistent().set(&key, &request);
+
+        env.events().publish(
+            (symbol_short!("hs_appr"), goal_id.clone()),
+            (borrower.clone(), config.admin.clone(), request.reason_hash.clone()),
+        );
+
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Returns the hardship withdrawal request for a borrower/goal, if any.
+    pub fn get_hardship_request(
+        env: Env,
+        borrower: Address,
+        goal_id: Symbol,
+    ) -> Option<HardshipWithdrawalRequest> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::HardshipRequest(borrower, goal_id))
+    }
+
+    /// Executes an approved hardship withdrawal: the full principal plus
+    /// any accrued yield, with ZERO early-withdrawal penalty — the one
+    /// difference from `withdraw`, which this otherwise mirrors exactly
+    /// (same yield-vault unwind, same `TotalPooled`/record bookkeeping).
+    /// Capped per rolling period (see `set_hardship_config`); the approver
+    /// and reason hash are recorded in the payout event.
+    ///
+    /// Fails with `HardshipRequestNotApproved` if the request hasn't been
+    /// approved, or `HardshipRequestExpired` if the approval window has
+    /// elapsed since the request was filed (even if it was approved inside
+    /// the window — the borrower must act within that same window too, so
+    /// an approval can't be "banked" indefinitely).
+    pub fn withdraw_hardship(
+        env: Env,
+        borrower: Address,
+        goal_id: Symbol,
+    ) -> Result<i128, EscrowError> {
+        borrower.require_auth();
+        Self::non_reentrant(&env, || {
+            let config = Self::get_config(&env)?;
+            let mut record = Self::get_borrower(&env, &borrower, &goal_id);
+
+            if record.deposited == 0 {
+                return Err(EscrowError::BorrowerNotFound);
+            }
+            if record.released {
+                return Err(EscrowError::AlreadyReleased);
+            }
+            if record.withdrawn {
+                return Err(EscrowError::AlreadyWithdrawn);
+            }
+            if record.seized {
+                return Err(EscrowError::AlreadySeized);
+            }
+
+            let key = DataKey::HardshipRequest(borrower.clone(), goal_id.clone());
+            let request: HardshipWithdrawalRequest = env
+                .storage()
+                .persistent()
+                .get(&key)
+                .ok_or(EscrowError::HardshipRequestNotFound)?;
+
+            if !request.approved {
+                return Err(EscrowError::HardshipRequestNotApproved);
+            }
+
+            let window = Self::hardship_approval_window_ledgers(&env);
+            let current_ledger = env.ledger().sequence();
+            if current_ledger > request.requested_at_ledger + window {
+                env.storage().persistent().remove(&key);
+                return Err(EscrowError::HardshipRequestExpired);
+            }
+
+            // Same yield-vault unwind as the normal penalty path.
+            let mut amount_withdrawn = record.deposited;
+            if let Some(vault) = &config.yield_vault {
+                let yield_shares = Self::read_yield_shares(&env, &borrower, &goal_id);
+                if yield_shares > 0 {
+                    let invoke_args = soroban_sdk::vec![
+                        &env,
+                        env.current_contract_address().into_val(&env),
+                        yield_shares.into_val(&env)
+                    ];
+                    amount_withdrawn =
+                        env.invoke_contract(vault, &Symbol::new(&env, "withdraw"), invoke_args);
+
+                    let total_shares = Self::read_total_yield_shares(&env) - yield_shares;
+                    env.storage()
+                        .instance()
+                        .set(&DataKey::TotalYieldShares, &total_shares);
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::YieldShares(borrower.clone(), goal_id.clone()));
+                }
+            }
+            let accrued_yield = amount_withdrawn.saturating_sub(record.deposited).max(0);
+
+            // Zero penalty: the borrower's full deposited principal, not
+            // `deposited - penalty` like the normal path.
+            let refund = record.deposited + accrued_yield;
+
+            // Per-period cap on waived principal. Checked (and recorded)
+            // BEFORE any token transfer, so a rejected request leaves no
+            // partial state.
+            let period_ledgers = Self::hardship_period_ledgers(&env);
+            let period_id = current_ledger / period_ledgers.max(1);
+            let period_key =
+                DataKey::HardshipWithdrawnInPeriod(borrower.clone(), goal_id.clone(), period_id);
+            let withdrawn_this_period: i128 =
+                env.storage().persistent().get(&period_key).unwrap_or(0i128);
+            let cap = Self::hardship_cap_per_period(&env);
+            if cap > 0 && withdrawn_this_period + record.deposited > cap {
+                return Err(EscrowError::HardshipAmountExceedsCap);
+            }
+            env.storage()
+                .persistent()
+                .set(&period_key, &(withdrawn_this_period + record.deposited));
+
+            let token = get_token_client(&env, &config.token);
+            token.transfer(&env.current_contract_address(), &borrower, &refund);
+
+            let total = Self::read_total_pooled(&env) - record.deposited;
+            env.storage().instance().set(&DataKey::TotalPooled, &total);
+
+            record.withdrawn = true;
+            record.deposited = 0;
+            Self::set_borrower(&env, &borrower, &goal_id, &record);
+            Self::owner_activity(&env, &borrower, &goal_id);
+
+            env.storage().persistent().remove(&key);
+
+            Self::extend_instance_ttl(&env);
+
+            env.events().publish(
+                (symbol_short!("hs_pay"), goal_id.clone()),
+                (
+                    borrower.clone(),
+                    refund,
+                    request.approver.clone(),
+                    request.reason_hash.clone(),
+                ),
             );
 
             Ok(refund)
