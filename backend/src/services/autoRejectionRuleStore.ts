@@ -115,6 +115,7 @@ export async function applyAutoRejectionIfNeeded(
         reason,
         autoRejectedAt: now,
         statusUpdatedAt: now,
+        version: { increment: 1 },
       },
     });
 

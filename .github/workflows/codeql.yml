@@ -59,10 +59,9 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: 'npm'
@@ -76,7 +75,7 @@ jobs:
         working-directory: ${{ matrix.path }}
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3
         with:
           languages: javascript-typescript
           # security-extended adds the lower-precision, higher-recall security
@@ -90,13 +89,13 @@ jobs:
       # The JS/TS extractor does not need a build; autobuild is a no-op that
       # keeps the workflow honest if a component later adds a compile step.
       - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3
         with:
           working-directory: ${{ matrix.path }}
 
       - name: Perform CodeQL Analysis
         id: analyze
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3
         with:
           # A distinct category per component keeps the two analyses from
           # overwriting each other's results in the Security tab.
@@ -120,7 +119,7 @@ jobs:
 
     steps:
       - name: Fail on open high/critical code scanning alerts
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const severities = new Set(['high', 'critical']);

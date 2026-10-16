@@ -26,6 +26,7 @@ import {
   confirmOcrFields,
   getUnconfirmedFields,
 } from "../services/kycOcrStore.js";
+import { quarantineUpload, scanForMalware } from "../services/malwareScanner.js";
 
 export const kycRouter = Router();
 
@@ -73,6 +74,23 @@ function requireOperatorKey(req: Request, res: Response, next: NextFunction) {
 interface OcrRequest extends Request {
   _ocrMimeType?: string;
   _ocrBuffer?: Buffer;
+}
+
+async function scanKycUpload(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!req.file) return next();
+  try {
+    const result = await scanForMalware(req.file.buffer);
+    if (result.status === "infected") {
+      const quarantineId = await quarantineUpload(req.file.buffer);
+      logger.error("[KYC] Malware upload quarantined", { quarantineId, signature: result.signature });
+      res.status(422).json({ error: "infected_file", message: "This document was quarantined because it failed a security scan." });
+      return;
+    }
+    next();
+  } catch (error) {
+    logger.error("[KYC] Malware scan unavailable; upload rejected", { error });
+    res.status(503).json({ error: "malware_scan_unavailable", message: "Document scanning is temporarily unavailable. Please retry later." });
+  }
 }
 
 function captureBufferForOcr(
@@ -132,6 +150,20 @@ function captureBufferForOcr(
  *     responses:
  *       201:
  *         description: Document encrypted and stored; OCR result included.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [documentId, uploadedAt, scanStatus, ocr]
+ *               properties:
+ *                 documentId: { type: string }
+ *                 uploadedAt: { type: string, format: date-time }
+ *                 scanStatus: { type: string, enum: [clean] }
+ *                 ocr:
+ *                   type: object
+ *                   required: [ocrFailed]
+ *                   properties:
+ *                     ocrFailed: { type: boolean }
  *       400:
  *         description: Missing file, oversized file, or unsupported file type.
  *       403:
@@ -159,6 +191,7 @@ kycRouter.post(
       next();
     });
   },
+  scanKycUpload,
   // Capture raw buffer for OCR before encryption zeros it
   captureBufferForOcr,
   encryptKycUpload,
@@ -247,6 +280,7 @@ kycRouter.post(
       res.status(201).json({
         documentId: record.documentId,
         uploadedAt: record.uploadedAt,
+        scanStatus: record.scanStatus,
         ocr: ocrResponse,
       });
     } catch (error) {

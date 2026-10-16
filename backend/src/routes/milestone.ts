@@ -23,6 +23,7 @@ import {
 } from "../services/milestoneProposalStore.js";
 import { verifyUploadAuthorization } from "../services/contractorAuth.js";
 import { logAudit } from "../services/audit.js";
+import { quarantineUpload, scanForMalware } from "../services/malwareScanner.js";
 
 export const milestoneRouter = Router();
 
@@ -118,6 +119,20 @@ milestoneRouter.post("/upload", (req, res, next) => {
     }
     next();
   });
+}, async (req, res, next) => {
+  if (!req.file) return next();
+  try {
+    const result = await scanForMalware(req.file.buffer);
+    if (result.status === "infected") {
+      const quarantineId = await quarantineUpload(req.file.buffer);
+      logger.error("[MilestoneUpload] Malware upload quarantined", { quarantineId, signature: result.signature });
+      return res.status(422).json({ error: "infected_file", message: "This file was quarantined because it failed a security scan." });
+    }
+    next();
+  } catch (error) {
+    logger.error("[MilestoneUpload] Malware scan unavailable; upload rejected", { error });
+    res.status(503).json({ error: "malware_scan_unavailable", message: "File scanning is temporarily unavailable. Please retry later." });
+  }
 }, async (req, res) => {
   try {
     // Authorize the caller before doing any work: only a whitelisted

@@ -30,6 +30,9 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   drift-check:
     name: Prisma Drift — schema vs production snapshot
@@ -37,10 +40,9 @@ jobs:
     # No postgres service needed for file-to-file mode; live-DB mode connects over network.
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: 'npm'
@@ -136,7 +138,7 @@ jobs:
 
       - name: Upload Drift Artifacts (file mode)
         if: always() && hashFiles('backend/drift-summary.txt') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: prisma-drift-file-mode
           path: |
@@ -148,7 +150,7 @@ jobs:
 
       - name: Upload Drift Artifacts (live mode)
         if: always() && hashFiles('backend/drift-live-summary.txt') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: prisma-drift-live-mode
           path: |
