@@ -46,6 +46,7 @@ import { apiKeysRouter } from "./routes/apiKeys.js";
 import { waitlistRouter } from "./routes/waitlist.js";
 import { loanImportRouter } from "./routes/loanImport.js";
 import { exportsRouter } from "./routes/exports.js";
+import { apiKeyUsageRouter } from "./routes/apiKeyUsage.js";
 import { authRouter } from "./routes/auth.js";
 import {
   feeWaiverLoanRouter,
@@ -257,6 +258,7 @@ app.use("/api/admin", authMiddleware, feeWaiverAdminRouter);
 app.use("/api/admin", adminAuthRouter);
 app.use("/api/admin/api-keys", apiKeysRouter);
 app.use("/api/exports", exportsRouter);
+app.use("/api/keys", apiKeyUsageRouter);
 app.use("/api/webhooks/pagerduty", incidentWebhookRouter);
 app.use("/api/webhooks/email-events", emailEventsRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);

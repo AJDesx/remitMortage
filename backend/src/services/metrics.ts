@@ -207,6 +207,21 @@ export const schedulerJobsTotal = new Counter({
 });
 
 // ---------------------------------------------------------------------------
+// API key quota metrics
+// ---------------------------------------------------------------------------
+
+/**
+ * Total number of API requests rejected for exceeding their key's
+ * per-billing-period quota, by plan. See middleware/apiKeyQuota.ts.
+ */
+export const apiKeyQuotaExceededTotal = new Counter({
+  name: "remitmortgage_apikey_quota_exceeded_total",
+  help: "Total API requests rejected for exceeding the caller's per-billing-period quota.",
+  labelNames: ["plan"] as const,
+  registers: [metricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
 // Convenience helpers
 // ---------------------------------------------------------------------------
 
