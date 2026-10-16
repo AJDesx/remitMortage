@@ -410,6 +410,24 @@ pub enum DataKey {
     LoanAssumption(BytesN<32>),
     /// Locked payoff quote for a loan, keyed by loan ID.
     PayoffQuote(BytesN<32>),
+    /// Investor's lockup position keyed by investor Address.
+    InvestorLockup(Address),
+    /// Reserve pool funded from fee share or treasury to pay tier bonus yield.
+    LockupBonusPool,
+    /// Configurable share (in basis points) of protocol fees routed to the lockup bonus pool.
+    LockupBonusFeeShareBps,
+    /// Number of extensions granted on a loan, keyed by loan ID.
+    LoanExtensionCount(BytesN<32>),
+    /// Configured interest-only introductory period details, keyed by loan ID.
+    LoanInterestOnly(BytesN<32>),
+    /// Maximum allowed number of extensions per loan.
+    MaxExtensionsPerLoan,
+    /// Maximum additional months permitted per extension request.
+    MaxExtensionMonths,
+    /// One-time fee rate in basis points charged for loan extensions.
+    ExtensionFeeBps,
+    /// Maximum allowed introductory interest-only months per loan.
+    MaxInterestOnlyMonths,
 }
 
 /// A pending loan assumption request where an existing borrower proposes to transfer
@@ -448,4 +466,89 @@ pub struct PayoffQuote {
     pub quoted_at_ledger: u32,
     /// Last ledger at which the quote is still valid (inclusive).
     pub expires_ledger: u32,
+}
+
+/// Lockup tiers for investors with commitment duration and bonus yield.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum LockupTier {
+    /// No commitment: standard liquidity, 0 bps bonus yield.
+    None = 0,
+    /// 90-day lockup commitment with 100 bps (1.0%) bonus yield.
+    Tier90Days = 1,
+    /// 180-day lockup commitment with 250 bps (2.5%) bonus yield.
+    Tier180Days = 2,
+    /// 365-day lockup commitment with 500 bps (5.0%) bonus yield.
+    Tier365Days = 3,
+}
+
+impl LockupTier {
+    pub fn days(&self) -> u32 {
+        match self {
+            LockupTier::None => 0,
+            LockupTier::Tier90Days => 90,
+            LockupTier::Tier180Days => 180,
+            LockupTier::Tier365Days => 365,
+        }
+    }
+
+    pub fn bonus_bps(&self) -> u32 {
+        match self {
+            LockupTier::None => 0,
+            LockupTier::Tier90Days => 100,
+            LockupTier::Tier180Days => 250,
+            LockupTier::Tier365Days => 500,
+        }
+    }
+}
+
+/// Tracks an investor's lockup tier position.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct InvestorLockupPosition {
+    pub tier: LockupTier,
+    pub unlock_ledger: u32,
+    pub bonus_bps: u32,
+    /// Ledger from which bonus accrual is measured. Set once when the
+    /// position first adopts a non-`None` tier, and never reset by a
+    /// top-up — a top-up extends `unlock_ledger` (never shortens it) and
+    /// may raise `bonus_bps` if the new tier pays more, but accrual keeps
+    /// counting from the original commitment.
+    pub bonus_start_ledger: u32,
+    /// Total bonus already paid out via `claim_lockup_bonus`. Pending bonus
+    /// is always computed as total accrued minus this.
+    pub claimed_bonus: i128,
+}
+
+/// Lifecycle phase of a loan (interest-only vs amortizing).
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum LoanPhase {
+    /// Principal amortizes with each payment.
+    Amortizing = 0,
+    /// Payments cover accrued interest only; principal remains unchanged.
+    InterestOnly = 1,
+}
+
+/// Intro interest-only configuration stored per loan.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoanIntroConfig {
+    pub interest_only_months: u32,
+    pub phase: LoanPhase,
+}
+
+/// Detailed schedule view including loan repayment phase.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScheduleView {
+    pub monthly_amount: i128,
+    pub duration_months: u32,
+    pub next_due_ledger: u32,
+    pub payments_made: u32,
+    pub payments_missed: u32,
+    pub interest_only_months: u32,
+    pub phase: LoanPhase,
 }

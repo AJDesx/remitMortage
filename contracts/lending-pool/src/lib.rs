@@ -17,10 +17,11 @@ mod test_loan_assumption;
 
 pub use crate::errors::{LoanAssumptionError, PoolError};
 pub use crate::types::{
-    BatchDisburseItem, DataKey, HalvingInfo, InvestorRecord, LoanAssumptionRequest,
-    LoanCollateralRecord, LoanPortabilitySnapshot, LoanRecord, LoanStatus, PayoffQuote,
-    PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal, Tranche,
-    TrancheInfo,
+    BatchDisburseItem, DataKey, HalvingInfo, InvestorLockupPosition, InvestorRecord,
+    LoanAssumptionRequest, LoanCollateralRecord, LoanIntroConfig, LoanPhase,
+    LoanPortabilitySnapshot, LoanRecord, LoanStatus, LockupTier, PayoffQuote,
+    PendingUpgradeRecord, PoolConfig, PoolHealth, RepaymentSchedule, RestructureProposal,
+    ScheduleView, Tranche, TrancheInfo,
 };
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
@@ -53,6 +54,10 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = 129_600; // ~7.5 days
 
 // Ledger durations used for repayment scheduling
 const LEDGERS_PER_MONTH: u32 = 518_400; // ~30 days
+/// Used only to annualize the lockup-tier bonus rate (bps are expressed
+/// per-year). 12 months at `LEDGERS_PER_MONTH` each, consistent with how
+/// this contract already approximates a month elsewhere.
+const LEDGERS_PER_YEAR: u32 = 12 * LEDGERS_PER_MONTH;
 #[cfg(not(test))]
 const LEDGERS_PER_DAY: u32 = 17_280; // ~1 day
 #[cfg(test)]
@@ -283,6 +288,136 @@ impl LendingPoolContract {
             .instance()
             .get(&DataKey::TotalProtocolFees)
             .unwrap_or(0i128)
+    }
+
+    // ── Lockup Tiers Storage Helpers ─────────────────────────────────────
+
+    fn lockup_tier_duration_ledgers(tier: &LockupTier) -> u32 {
+        tier.days() * LEDGERS_PER_DAY
+    }
+
+    fn read_investor_lockup(env: &Env, investor: &Address) -> Option<InvestorLockupPosition> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::InvestorLockup(investor.clone()))
+    }
+
+    fn set_investor_lockup(env: &Env, investor: &Address, pos: &InvestorLockupPosition) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::InvestorLockup(investor.clone()), pos);
+    }
+
+    fn remove_investor_lockup(env: &Env, investor: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::InvestorLockup(investor.clone()));
+    }
+
+    fn read_lockup_bonus_pool(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::LockupBonusPool)
+            .unwrap_or(0i128)
+    }
+
+    fn set_lockup_bonus_pool(env: &Env, amount: i128) {
+        env.storage()
+            .instance()
+            .set(&DataKey::LockupBonusPool, &amount);
+    }
+
+    fn read_lockup_bonus_fee_share_bps(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::LockupBonusFeeShareBps)
+            .unwrap_or(0u32)
+    }
+
+    fn set_lockup_bonus_fee_share_bps_storage(env: &Env, bps: u32) {
+        env.storage()
+            .instance()
+            .set(&DataKey::LockupBonusFeeShareBps, &bps);
+    }
+
+    /// Total bonus accrued on `record`'s current deposit under `lockup`'s
+    /// tier, minus whatever has already been claimed. Accrues linearly from
+    /// `lockup.bonus_start_ledger` at `lockup.bonus_bps` per year on the
+    /// investor's current `deposited` balance — the same
+    /// current-balance-proportional approximation `calculate_pending_yield`
+    /// already makes for ordinary yield, applied here to the bonus instead.
+    /// Zero for a `None`-tier position (no bonus was ever promised) or a
+    /// zero/negative balance.
+    fn calculate_pending_bonus(
+        env: &Env,
+        record: &InvestorRecord,
+        lockup: &InvestorLockupPosition,
+    ) -> i128 {
+        if lockup.tier == LockupTier::None || lockup.bonus_bps == 0 || record.deposited <= 0 {
+            return 0;
+        }
+        let current_ledger = env.ledger().sequence();
+        let elapsed = current_ledger.saturating_sub(lockup.bonus_start_ledger) as i128;
+        let total_accrued = (record.deposited * lockup.bonus_bps as i128 * elapsed)
+            / (BPS_SCALE as i128 * LEDGERS_PER_YEAR as i128);
+        (total_accrued - lockup.claimed_bonus).max(0)
+    }
+
+    // ── Loan Extension Storage Helpers ───────────────────────────────────
+
+    fn read_loan_extension_count(env: &Env, loan_id: &BytesN<32>) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LoanExtensionCount(loan_id.clone()))
+            .unwrap_or(0u32)
+    }
+
+    fn set_loan_extension_count(env: &Env, loan_id: &BytesN<32>, count: u32) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanExtensionCount(loan_id.clone()), &count);
+    }
+
+    fn read_max_extensions_per_loan(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxExtensionsPerLoan)
+            .unwrap_or(2u32)
+    }
+
+    fn read_max_extension_months(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxExtensionMonths)
+            .unwrap_or(12u32)
+    }
+
+    fn read_extension_fee_bps(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ExtensionFeeBps)
+            .unwrap_or(100u32)
+    }
+
+    // ── Interest-Only Intro Storage Helpers ──────────────────────────────
+
+    fn read_loan_intro_config(env: &Env, loan_id: &BytesN<32>) -> Option<LoanIntroConfig> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LoanInterestOnly(loan_id.clone()))
+    }
+
+    fn set_loan_intro_config(env: &Env, loan_id: &BytesN<32>, config: &LoanIntroConfig) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanInterestOnly(loan_id.clone()), config);
+    }
+
+    fn read_max_interest_only_months(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxInterestOnlyMonths)
+            .unwrap_or(24u32)
     }
 
     /// Splits `interest` into the protocol's cut and the investors' remainder.
@@ -1235,6 +1370,179 @@ impl LendingPoolContract {
         Self::deposit_with_cap(env, investor, amount, tranche, None)
     }
 
+    /// Investor deposits capital with a chosen commitment lockup tier.
+    ///
+    /// Available tiers:
+    /// - `LockupTier::None`: no commitment, standard liquidity, 0 bps bonus yield.
+    /// - `LockupTier::Tier90Days`: 90-day lockup, 100 bps (1.0%) bonus yield.
+    /// - `LockupTier::Tier180Days`: 180-day lockup, 250 bps (2.5%) bonus yield.
+    /// - `LockupTier::Tier365Days`: 365-day lockup, 500 bps (5.0%) bonus yield.
+    pub fn deposit_with_lockup(
+        env: Env,
+        investor: Address,
+        amount: i128,
+        tranche: Tranche,
+        tier: LockupTier,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        Self::check_whitelist(&env, &investor)?;
+        investor.require_auth();
+        Self::non_reentrant(&env, || {
+            if amount <= 0 {
+                return Err(PoolError::InvalidAmount);
+            }
+
+            let config = Self::read_config(&env)?;
+
+            if config.min_deposit_amount > 0 && amount < config.min_deposit_amount {
+                return Err(PoolError::DepositBelowMinimum);
+            }
+
+            let token = Self::token_client(&env, &config.token);
+            token.transfer(&investor, &env.current_contract_address(), &amount);
+
+            let mut record = Self::read_investor(&env, &investor);
+            if record.deposited == 0 {
+                record.start_ledger = env.ledger().sequence();
+                record.tranche = tranche.clone();
+            } else if record.tranche != tranche {
+                return Err(PoolError::TrancheMismatch);
+            }
+            record.deposited += amount;
+            Self::set_investor(&env, &investor, &record);
+
+            // Record or update lockup position. A top-up never shortens an
+            // existing lock: the unlock ledger only ever moves later (the
+            // max of what's already set and what this deposit implies), and
+            // bonus accrual keeps counting from the position's original
+            // bonus_start_ledger rather than resetting on every top-up.
+            let current_seq = env.ledger().sequence();
+            let duration = Self::lockup_tier_duration_ledgers(&tier);
+            let unlock_ledger = current_seq + duration;
+
+            let mut pos = Self::read_investor_lockup(&env, &investor).unwrap_or(InvestorLockupPosition {
+                tier,
+                unlock_ledger,
+                bonus_bps: tier.bonus_bps(),
+                bonus_start_ledger: current_seq,
+                claimed_bonus: 0,
+            });
+            if tier != LockupTier::None {
+                let adopting_new_tier = pos.tier == LockupTier::None;
+                pos.tier = tier;
+                pos.bonus_bps = tier.bonus_bps();
+                pos.unlock_ledger = pos.unlock_ledger.max(unlock_ledger);
+                if adopting_new_tier {
+                    pos.bonus_start_ledger = current_seq;
+                }
+            }
+            Self::set_investor_lockup(&env, &investor, &pos);
+
+            let debt_balance = Self::read_debt_balance(&env, &investor, &tranche) + amount;
+            Self::set_debt_balance(&env, &investor, &tranche, debt_balance);
+            let debt_supply = Self::read_debt_total_supply(&env, &tranche) + amount;
+            Self::set_debt_total_supply(&env, &tranche, debt_supply);
+
+            let mut tranche_info = Self::read_tranche_info(&env, &tranche);
+            tranche_info.total_deposited += amount;
+            Self::set_tranche_info(&env, &tranche, &tranche_info);
+
+            let mut liquidity = Self::read_total_liquidity(&env);
+            liquidity += amount;
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalLiquidity, &liquidity);
+
+            let total_dep = Self::read_total_deposited(&env) + amount;
+            Self::set_total_deposited(&env, total_dep);
+
+            env.events().publish(
+                (symbol_short!("dep_tier"), investor.clone()),
+                (amount, tier as u32, pos.unlock_ledger, pos.bonus_bps),
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Admin-configured share (bps) of the protocol fee skimmed from loan
+    /// interest that funds the lockup bonus pool, instead of going to
+    /// treasury. `0` (the default) sends 100% of the protocol fee to
+    /// treasury as before and the bonus pool is never funded — the bonus
+    /// feature is fully opt-in for an existing deployment.
+    pub fn set_lockup_bonus_fee_share_bps(env: Env, bps: u32) -> Result<(), PoolError> {
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+        if bps > BPS_SCALE {
+            return Err(PoolError::InvalidAmount);
+        }
+        Self::set_lockup_bonus_fee_share_bps_storage(&env, bps);
+        Ok(())
+    }
+
+    /// Returns the investor's lockup position, if they have ever called
+    /// `deposit_with_lockup`.
+    pub fn get_investor_lockup(env: Env, investor: Address) -> Option<InvestorLockupPosition> {
+        Self::read_investor_lockup(&env, &investor)
+    }
+
+    /// Returns the current balance of the lockup bonus reserve — funded
+    /// exclusively from the configured share of protocol fees (see
+    /// `set_lockup_bonus_fee_share_bps`), never from investor principal.
+    pub fn get_lockup_bonus_pool(env: Env) -> i128 {
+        Self::read_lockup_bonus_pool(&env)
+    }
+
+    /// Claims the pending lockup bonus for a tiered position. Returns `0`
+    /// (not an error) for a `None`-tier position or when nothing is owed —
+    /// mirrors `claim_yield`'s "nothing to claim is not a failure" shape.
+    ///
+    /// The payout is capped by `LockupBonusPool`'s current balance: if the
+    /// fee skim hasn't funded enough yet, the investor receives what's
+    /// available now and the remainder stays accrued for a later claim —
+    /// the bonus is never paid out of `TotalLiquidity` or any other
+    /// investor's deposited principal.
+    pub fn claim_lockup_bonus(env: Env, investor: Address) -> Result<i128, PoolError> {
+        Self::check_not_paused(&env)?;
+        investor.require_auth();
+
+        let mut lockup = match Self::read_investor_lockup(&env, &investor) {
+            Some(lockup) if lockup.tier != LockupTier::None => lockup,
+            _ => return Ok(0),
+        };
+
+        let record = Self::read_investor(&env, &investor);
+        let pending = Self::calculate_pending_bonus(&env, &record, &lockup);
+        if pending <= 0 {
+            return Ok(0);
+        }
+
+        let pool = Self::read_lockup_bonus_pool(&env);
+        let payout = pending.min(pool);
+        if payout <= 0 {
+            return Ok(0);
+        }
+
+        lockup.claimed_bonus += payout;
+        Self::set_investor_lockup(&env, &investor, &lockup);
+        Self::set_lockup_bonus_pool(&env, pool - payout);
+
+        let config = Self::read_config(&env)?;
+        let token = Self::token_client(&env, &config.token);
+        token.transfer(&env.current_contract_address(), &investor, &payout);
+
+        env.events().publish(
+            (symbol_short!("bonus_pay"), investor.clone()),
+            (payout, lockup.tier as u32),
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        Ok(payout)
+    }
+
     /// Deposit penalty/fee revenue into the pool and distribute it as yield.
     ///
     /// Pulls `amount` USDC from `from` and books it as distributable interest:
@@ -1410,11 +1718,16 @@ impl LendingPoolContract {
         Ok(())
     }
 
-    /// Admin approves a pending loan request.
+    /// Admin approves a pending loan request with an optional introductory interest-only period.
     ///
-    /// Verifies that pool has sufficient liquidity for the loan principal,
-    /// then transitions the loan status from Requested to Approved.
-    pub fn approve_loan(env: Env, loan_id: BytesN<32>) -> Result<(), PoolError> {
+    /// When `interest_only_months > 0`, payments during the introductory period cover accrued
+    /// interest only and principal remains unchanged. Full amortization begins afterwards with
+    /// a recalculated monthly amount.
+    pub fn approve_loan_with_intro(
+        env: Env,
+        loan_id: BytesN<32>,
+        interest_only_months: u32,
+    ) -> Result<(), PoolError> {
         Self::check_not_paused(&env)?;
         let config = Self::read_config(&env)?;
         config.admin.require_auth();
@@ -1423,6 +1736,11 @@ impl LendingPoolContract {
 
         if loan.status != LoanStatus::Requested {
             return Err(PoolError::InvalidLoanState);
+        }
+
+        let max_io = Self::read_max_interest_only_months(&env);
+        if interest_only_months > max_io {
+            return Err(PoolError::InterestOnlyCapExceeded);
         }
 
         // Verify pool has enough liquidity accounting for active commitments.
@@ -1437,8 +1755,13 @@ impl LendingPoolContract {
         let interest = (loan.principal * loan.interest_rate_bps as i128) / 10_000;
         let total_owed = loan.principal + interest;
         let duration_months = DEFAULT_DURATION_MONTHS;
-        let monthly_amount = total_owed / (duration_months as i128);
         let next_due = env.ledger().sequence() + LEDGERS_PER_MONTH;
+
+        let monthly_amount = if interest_only_months > 0 {
+            interest / (duration_months as i128)
+        } else {
+            total_owed / (duration_months as i128)
+        };
 
         loan.status = LoanStatus::Approved;
 
@@ -1449,6 +1772,17 @@ impl LendingPoolContract {
             payments_made: 0u32,
             payments_missed: 0u32,
         };
+
+        let phase = if interest_only_months > 0 {
+            LoanPhase::InterestOnly
+        } else {
+            LoanPhase::Amortizing
+        };
+        let intro_config = LoanIntroConfig {
+            interest_only_months,
+            phase,
+        };
+        Self::set_loan_intro_config(&env, &loan_id, &intro_config);
 
         // Persist loan and schedule separately
         Self::set_loan(&env, &loan_id, &loan);
@@ -1474,6 +1808,11 @@ impl LendingPoolContract {
             .publish((Symbol::new(&env, "loan_approved"),), (loan_id.clone(),));
 
         Ok(())
+    }
+
+    /// Admin approves a pending loan request (defaults to zero interest-only months).
+    pub fn approve_loan(env: Env, loan_id: BytesN<32>) -> Result<(), PoolError> {
+        Self::approve_loan_with_intro(env, loan_id, 0)
     }
 
     /// Admin rejects a pending loan application.
@@ -1751,6 +2090,140 @@ impl LendingPoolContract {
         env.storage()
             .persistent()
             .get(&DataKey::RestructureProposal(loan_id))
+    }
+
+    // ── Loan Maturity Extension ──────────────────────────────────────────
+
+    /// Borrower requests an extension of loan maturity by `additional_months`.
+    ///
+    /// The loan must be in good standing (zero missed payments and not past grace period).
+    /// Enforces a maximum extension term per request and maximum extension count per loan.
+    /// A one-time extension fee based on outstanding debt is routed to the treasury,
+    /// and the repayment schedule is recomputed for the new term.
+    pub fn request_extension(
+        env: Env,
+        loan_id: BytesN<32>,
+        additional_months: u32,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+
+        let loan = Self::read_loan(&env, &loan_id)?;
+        loan.borrower.require_auth();
+
+        if loan.status != LoanStatus::Approved {
+            return Err(PoolError::LoanNotActive);
+        }
+
+        if additional_months == 0 {
+            return Err(PoolError::InvalidAmount);
+        }
+
+        let max_ext_months = Self::read_max_extension_months(&env);
+        if additional_months > max_ext_months {
+            return Err(PoolError::ExtensionTermTooLong);
+        }
+
+        let current_extensions = Self::read_loan_extension_count(&env, &loan_id);
+        let max_extensions = Self::read_max_extensions_per_loan(&env);
+        if current_extensions >= max_extensions {
+            return Err(PoolError::ExtensionCapExceeded);
+        }
+
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::LoanSchedule(loan_id.clone()))
+        {
+            return Err(PoolError::InvalidLoanState);
+        }
+
+        let mut schedule: RepaymentSchedule = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoanSchedule(loan_id.clone()))
+            .unwrap();
+
+        // Must be in good standing: no missed payments
+        if schedule.payments_missed > 0 {
+            return Err(PoolError::LoanNotGoodStanding);
+        }
+
+        // Must not be overdue beyond grace period
+        let current_ledger = env.ledger().sequence();
+        let grace_deadline = schedule.next_due_ledger + Self::grace_period_ledgers(&env);
+        if current_ledger > grace_deadline {
+            return Err(PoolError::LoanNotGoodStanding);
+        }
+
+        // Charge one-time extension fee (basis points of outstanding debt) routed to treasury
+        let config = Self::read_config(&env)?;
+        let fee_bps = Self::read_extension_fee_bps(&env);
+        let fee = if fee_bps > 0 && loan.outstanding_debt > 0 {
+            (loan.outstanding_debt * fee_bps as i128) / BPS_SCALE as i128
+        } else {
+            0i128
+        };
+
+        if fee > 0 {
+            let token = Self::token_client(&env, &config.token);
+            token.transfer(&loan.borrower, &config.treasury_address, &fee);
+        }
+
+        // Recompute schedule
+        let new_duration = schedule.duration_months + additional_months;
+        let remaining_months = new_duration.saturating_sub(schedule.payments_made);
+        if remaining_months > 0 && loan.outstanding_debt > 0 {
+            schedule.monthly_amount = loan.outstanding_debt / (remaining_months as i128);
+        }
+        schedule.duration_months = new_duration;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanSchedule(loan_id.clone()), &schedule);
+
+        Self::set_loan_extension_count(&env, &loan_id, current_extensions + 1);
+
+        env.events().publish(
+            (symbol_short!("ext_loan"), loan_id.clone()),
+            (
+                loan.borrower.clone(),
+                additional_months,
+                fee,
+                schedule.duration_months,
+            ),
+        );
+
+        Ok(())
+    }
+
+    /// Admin configures parameters for loan extensions.
+    pub fn set_extension_config(
+        env: Env,
+        max_extensions: u32,
+        max_extension_months: u32,
+        extension_fee_bps: u32,
+    ) -> Result<(), PoolError> {
+        Self::check_not_paused(&env)?;
+        let config = Self::read_config(&env)?;
+        config.admin.require_auth();
+        if extension_fee_bps > BPS_SCALE {
+            return Err(PoolError::InvalidAmount);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxExtensionsPerLoan, &max_extensions);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxExtensionMonths, &max_extension_months);
+        env.storage()
+            .instance()
+            .set(&DataKey::ExtensionFeeBps, &extension_fee_bps);
+        Ok(())
+    }
+
+    /// Returns the number of extensions granted on a loan.
+    pub fn get_loan_extension_count(env: Env, loan_id: BytesN<32>) -> u32 {
+        Self::read_loan_extension_count(&env, &loan_id)
     }
 
     /// Refinance an active loan to extend its term or adjust its interest rate.
@@ -2406,8 +2879,67 @@ impl LendingPoolContract {
         token.transfer(&borrower, &env.current_contract_address(), &amount);
 
         let old_repaid = loan.repaid;
-        loan.repaid += amount;
-        loan.outstanding_debt = loan.outstanding_debt.saturating_sub(amount);
+
+        let intro_opt = Self::read_loan_intro_config(&env, &loan_id);
+        if let Some(mut intro) = intro_opt {
+            if intro.phase == LoanPhase::InterestOnly {
+                let monthly_interest = if env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::LoanSchedule(loan_id.clone()))
+                {
+                    let s: RepaymentSchedule = env
+                        .storage()
+                        .persistent()
+                        .get(&DataKey::LoanSchedule(loan_id.clone()))
+                        .unwrap();
+                    s.monthly_amount
+                } else {
+                    (loan.principal * loan.interest_rate_bps as i128)
+                        / (10_000 * DEFAULT_DURATION_MONTHS as i128)
+                };
+
+                if amount > monthly_interest {
+                    let prepayment = amount - monthly_interest;
+                    loan.principal = loan.principal.saturating_sub(prepayment);
+                    loan.repaid += prepayment;
+                }
+                loan.outstanding_debt = loan.outstanding_debt.saturating_sub(amount);
+
+                if env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::LoanSchedule(loan_id.clone()))
+                {
+                    let mut s: RepaymentSchedule = env
+                        .storage()
+                        .persistent()
+                        .get(&DataKey::LoanSchedule(loan_id.clone()))
+                        .unwrap();
+                    if s.payments_made >= intro.interest_only_months {
+                        intro.phase = LoanPhase::Amortizing;
+                        let rem_months = s.duration_months.saturating_sub(s.payments_made);
+                        if rem_months > 0 && loan.outstanding_debt > 0 {
+                            s.monthly_amount = loan.outstanding_debt / (rem_months as i128);
+                        }
+                        env.storage()
+                            .persistent()
+                            .set(&DataKey::LoanSchedule(loan_id.clone()), &s);
+                        Self::set_loan_intro_config(&env, &loan_id, &intro);
+                        env.events().publish(
+                            (symbol_short!("phase_tr"), loan_id.clone()),
+                            (LoanPhase::Amortizing as u32, s.monthly_amount),
+                        );
+                    }
+                }
+            } else {
+                loan.repaid += amount;
+                loan.outstanding_debt = loan.outstanding_debt.saturating_sub(amount);
+            }
+        } else {
+            loan.repaid += amount;
+            loan.outstanding_debt = loan.outstanding_debt.saturating_sub(amount);
+        }
 
         // ── Yield Distribution Waterfall ──────────────────────────────
         // Determine how much of this repayment is interest (vs principal recovery).
@@ -2441,11 +2973,26 @@ impl LendingPoolContract {
             protocol_fee = fee;
 
             if protocol_fee > 0 {
-                token.transfer(
-                    &env.current_contract_address(),
-                    &config.treasury_address,
-                    &protocol_fee,
-                );
+                let bonus_share_bps = Self::read_lockup_bonus_fee_share_bps(&env);
+                let bonus_funding = if bonus_share_bps > 0 {
+                    (protocol_fee * bonus_share_bps as i128) / BPS_SCALE as i128
+                } else {
+                    0i128
+                };
+                let treasury_fee = protocol_fee - bonus_funding;
+
+                if bonus_funding > 0 {
+                    let new_bonus_pool = Self::read_lockup_bonus_pool(&env) + bonus_funding;
+                    Self::set_lockup_bonus_pool(&env, new_bonus_pool);
+                }
+
+                if treasury_fee > 0 {
+                    token.transfer(
+                        &env.current_contract_address(),
+                        &config.treasury_address,
+                        &treasury_fee,
+                    );
+                }
 
                 let total_protocol_fees = Self::read_total_protocol_fees(&env) + protocol_fee;
                 env.storage()
@@ -3201,6 +3748,22 @@ impl LendingPoolContract {
                 }
             }
 
+            // ── Tiered Lockup Check ────────────────────────────────────────
+            // A chosen lockup tier (deposit_with_lockup) locks the WHOLE
+            // position until its own, later unlock ledger, on top of (not
+            // instead of) the pool-wide lockup above. An investor who never
+            // called deposit_with_lockup has no InvestorLockup record and is
+            // unaffected — this check is a strict no-op for every pre-tier
+            // deposit and every existing test.
+            if let Some(lockup) = Self::read_investor_lockup(&env, &investor) {
+                if lockup.tier != LockupTier::None {
+                    let current_ledger = env.ledger().sequence();
+                    if current_ledger < lockup.unlock_ledger {
+                        return Err(PoolError::TieredLockupActive);
+                    }
+                }
+            }
+
             // ── Max Single Withdrawal Check ───────────────────────────────
             // Caps the blast radius of a compromised key or contract bug: a
             // larger position must be split across multiple calls.
@@ -3560,6 +4123,43 @@ impl LendingPoolContract {
         } else {
             Ok(None)
         }
+    }
+
+    /// Returns the repayment schedule together with the loan's current
+    /// phase (interest-only vs amortizing) and configured interest-only
+    /// length, so a caller can tell the two apart without separately
+    /// fetching `LoanIntroConfig`. A loan approved without
+    /// `approve_loan_with_intro` (or via plain `approve_loan`, which passes
+    /// `interest_only_months = 0`) always reports `LoanPhase::Amortizing`
+    /// with `interest_only_months = 0` — identical to how every loan
+    /// behaved before this feature existed.
+    pub fn get_schedule_view(
+        env: Env,
+        loan_id: BytesN<32>,
+    ) -> Result<Option<ScheduleView>, PoolError> {
+        let sched: RepaymentSchedule = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoanSchedule(loan_id.clone()))
+        {
+            Some(sched) => sched,
+            None => return Ok(None),
+        };
+
+        let intro = Self::read_loan_intro_config(&env, &loan_id).unwrap_or(LoanIntroConfig {
+            interest_only_months: 0,
+            phase: LoanPhase::Amortizing,
+        });
+
+        Ok(Some(ScheduleView {
+            monthly_amount: sched.monthly_amount,
+            duration_months: sched.duration_months,
+            next_due_ledger: sched.next_due_ledger,
+            payments_made: sched.payments_made,
+            payments_missed: sched.payments_missed,
+            interest_only_months: intro.interest_only_months,
+            phase: intro.phase,
+        }))
     }
 
     /// Returns the contract version (incremented on each successful upgrade).
@@ -10057,5 +10657,352 @@ mod test {
 
         let res = client.try_top_up_collateral(&loan_id, &borrower, &0i128);
         assert_eq!(res.err().unwrap().unwrap(), PoolError::InvalidAmount);
+    }
+
+    // ── Investor Lockup Tiers ─────────────────────────────────────────────
+
+    #[test]
+    fn test_lockup_tier_blocks_withdrawal_until_unlock_and_top_up_preserves_it() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+
+        client.deposit_with_lockup(
+            &investor,
+            &10_000_0000000i128,
+            &Tranche::Senior,
+            &LockupTier::Tier90Days,
+        );
+
+        let lockup = client.get_investor_lockup(&investor).unwrap();
+        assert_eq!(lockup.tier, LockupTier::Tier90Days);
+        assert_eq!(lockup.bonus_bps, 100u32);
+        assert_eq!(lockup.claimed_bonus, 0i128);
+
+        // Early exit attempt before unlock fails.
+        let res = client.try_withdraw(&investor, &1_0000000i128);
+        assert_eq!(res, Err(Ok(PoolError::TieredLockupActive)));
+
+        // Top-up with NO tier specified (plain deposit): balance grows, the
+        // existing lock is left exactly as it was.
+        client.deposit(&investor, &5_000_0000000i128, &Tranche::Senior);
+        let lockup_after_top_up = client.get_investor_lockup(&investor).unwrap();
+        assert_eq!(lockup_after_top_up.unlock_ledger, lockup.unlock_ledger);
+        assert_eq!(lockup_after_top_up.tier, LockupTier::Tier90Days);
+        assert_eq!(
+            client.get_investor_info(&investor).deposited,
+            15_000_0000000i128
+        );
+
+        // The WHOLE balance (original + top-up) is still locked.
+        let res2 = client.try_withdraw(&investor, &1_0000000i128);
+        assert_eq!(res2, Err(Ok(PoolError::TieredLockupActive)));
+
+        // Past the unlock ledger, withdrawal succeeds normally.
+        env.ledger()
+            .with_mut(|li| li.sequence_number = lockup.unlock_ledger);
+        client.withdraw(&investor, &1_0000000i128);
+    }
+
+    #[test]
+    fn test_lockup_top_up_with_a_longer_tier_extends_but_never_shortens_unlock() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, investor, _treasury, _token_address, client) = setup_pool(&env);
+
+        client.deposit_with_lockup(
+            &investor,
+            &10_000_0000000i128,
+            &Tranche::Senior,
+            &LockupTier::Tier90Days,
+        );
+        let first = client.get_investor_lockup(&investor).unwrap();
+
+        // Top up with a LONGER tier: unlock extends, bonus rate updates,
+        // but the original bonus accrual start is preserved.
+        client.deposit_with_lockup(
+            &investor,
+            &5_000_0000000i128,
+            &Tranche::Senior,
+            &LockupTier::Tier365Days,
+        );
+        let second = client.get_investor_lockup(&investor).unwrap();
+
+        assert_eq!(second.tier, LockupTier::Tier365Days);
+        assert_eq!(second.bonus_bps, 500u32);
+        assert!(second.unlock_ledger > first.unlock_ledger);
+        assert_eq!(second.bonus_start_ledger, first.bonus_start_ledger);
+
+        // A SHORTER top-up tier must not shorten the unlock already set.
+        client.deposit_with_lockup(
+            &investor,
+            &1_000_0000000i128,
+            &Tranche::Senior,
+            &LockupTier::Tier90Days,
+        );
+        let third = client.get_investor_lockup(&investor).unwrap();
+        assert_eq!(third.unlock_ledger, second.unlock_ledger);
+    }
+
+    #[test]
+    fn test_lockup_bonus_accrues_only_on_tiered_positions_and_is_fee_funded() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, investor, _treasury, token_address, client) = setup_pool(&env);
+        let tiered_investor = Address::generate(&env);
+
+        let (validator_addr, signers, _validator) = setup_multisig(&env, &admin);
+        client.set_multisig_validator(&validator_addr);
+        // Route the maximum allowed protocol fee share, then route all of
+        // THAT fee into the lockup bonus pool instead of treasury.
+        client.set_fee_switch_bps(&MAX_FEE_SWITCH_BPS, &signers);
+        client.set_lockup_bonus_fee_share_bps(&10_000u32);
+
+        client.deposit_with_lockup(
+            &tiered_investor,
+            &50_000_0000000i128,
+            &Tranche::Senior,
+            &LockupTier::Tier365Days,
+        );
+        client.deposit(&investor, &50_000_0000000i128, &Tranche::Senior);
+
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 50_000_0000000i128;
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        let contractor = Address::generate(&env);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+
+        let loan_info = client.get_loan_info(&loan_id);
+        let sac = token::StellarAssetClient::new(&env, &token_address);
+        sac.mint(&borrower, &loan_info.outstanding_debt);
+        client.repay(&borrower, &loan_id, &loan_info.outstanding_debt);
+
+        // The fee skim funded the bonus pool — never other investors' principal.
+        let bonus_pool = client.get_lockup_bonus_pool();
+        assert!(bonus_pool > 0);
+
+        // Advance time so the tiered position has accrued a measurable bonus.
+        env.ledger()
+            .with_mut(|li| li.sequence_number += LEDGERS_PER_MONTH);
+
+        let tiered_bonus = client.claim_lockup_bonus(&tiered_investor);
+        assert!(tiered_bonus > 0);
+
+        // The untiered investor — same tranche, same repayment — gets none.
+        let untiered_bonus = client.claim_lockup_bonus(&investor);
+        assert_eq!(untiered_bonus, 0i128);
+    }
+
+    // ── Borrower-Initiated Loan Maturity Extension ───────────────────────
+
+    #[test]
+    fn test_request_extension_recalculates_schedule_and_charges_fee() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, investor, treasury, token_address, client) = setup_pool(&env);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 50_000_0000000i128;
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        let contractor = Address::generate(&env);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+
+        let sched_before = client.get_repayment_schedule(&loan_id).unwrap().unwrap();
+
+        // Default extension fee is 100 bps of outstanding debt.
+        let loan_info = client.get_loan_info(&loan_id);
+        let expected_fee = (loan_info.outstanding_debt * 100) / 10_000;
+        let token = token::Client::new(&env, &token_address);
+        token::StellarAssetClient::new(&env, &token_address).mint(&borrower, &expected_fee);
+        let treasury_before = token.balance(&treasury);
+
+        client.request_extension(&loan_id, &6u32);
+
+        let sched_after = client.get_repayment_schedule(&loan_id).unwrap().unwrap();
+        assert_eq!(
+            sched_after.duration_months,
+            sched_before.duration_months + 6
+        );
+        assert_ne!(sched_after.monthly_amount, sched_before.monthly_amount);
+        assert_eq!(token.balance(&treasury), treasury_before + expected_fee);
+        assert_eq!(client.get_loan_extension_count(&loan_id), 1u32);
+    }
+
+    #[test]
+    fn test_request_extension_rejects_loan_with_missed_payments() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 50_000_0000000i128;
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        let contractor = Address::generate(&env);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+
+        let sched = client.get_repayment_schedule(&loan_id).unwrap().unwrap();
+        // Jump past the due date + grace period so the next payment is late.
+        env.ledger().with_mut(|li| {
+            li.sequence_number = sched.next_due_ledger + GRACE_PERIOD_LEDGERS + LEDGERS_PER_DAY * 5
+        });
+
+        // Pay comfortably more than the late-required amount (monthly +
+        // penalty), but far less than the full debt, so the loan stays
+        // Approved with payments_missed > 0 rather than becoming Repaid.
+        let late_payment = sched.monthly_amount * 2;
+        token::StellarAssetClient::new(&env, &token_address).mint(&borrower, &late_payment);
+        client.repay(&borrower, &loan_id, &late_payment);
+
+        let updated_sched = client.get_repayment_schedule(&loan_id).unwrap().unwrap();
+        assert!(updated_sched.payments_missed > 0);
+
+        let res = client.try_request_extension(&loan_id, &6u32);
+        assert_eq!(res, Err(Ok(PoolError::LoanNotGoodStanding)));
+    }
+
+    #[test]
+    fn test_request_extension_rejects_once_extension_cap_reached() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 50_000_0000000i128;
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id);
+        let contractor = Address::generate(&env);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+
+        // Default cap is 2 extensions per loan.
+        let loan_info = client.get_loan_info(&loan_id);
+        let fee_each = (loan_info.outstanding_debt * 100) / 10_000;
+        token::StellarAssetClient::new(&env, &token_address).mint(&borrower, &(fee_each * 3));
+
+        client.request_extension(&loan_id, &6u32);
+        client.request_extension(&loan_id, &6u32);
+        assert_eq!(client.get_loan_extension_count(&loan_id), 2u32);
+
+        let res = client.try_request_extension(&loan_id, &6u32);
+        assert_eq!(res, Err(Ok(PoolError::ExtensionCapExceeded)));
+    }
+
+    // ── Interest-Only Introductory Period ────────────────────────────────
+
+    #[test]
+    fn test_interest_only_period_transitions_to_amortizing_after_configured_months() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 50_000_0000000i128;
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan_with_intro(&loan_id, &3u32);
+        let contractor = Address::generate(&env);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+
+        let view0 = client.get_schedule_view(&loan_id).unwrap().unwrap();
+        assert_eq!(view0.phase, LoanPhase::InterestOnly);
+        assert_eq!(view0.interest_only_months, 3u32);
+
+        let principal_before = client.get_loan_info(&loan_id).principal;
+
+        let sac = token::StellarAssetClient::new(&env, &token_address);
+        sac.mint(&borrower, &(view0.monthly_amount * 3));
+
+        for _ in 0..3 {
+            client.repay(&borrower, &loan_id, &view0.monthly_amount);
+        }
+
+        // Principal must be unchanged through the whole interest-only period.
+        assert_eq!(client.get_loan_info(&loan_id).principal, principal_before);
+
+        let view_after = client.get_schedule_view(&loan_id).unwrap().unwrap();
+        assert_eq!(view_after.phase, LoanPhase::Amortizing);
+        assert_ne!(view_after.monthly_amount, view0.monthly_amount);
+    }
+
+    #[test]
+    fn test_interest_only_period_allows_early_principal_prepayment() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 50_000_0000000i128;
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan_with_intro(&loan_id, &6u32);
+        let contractor = Address::generate(&env);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+
+        let view0 = client.get_schedule_view(&loan_id).unwrap().unwrap();
+        let extra_principal = 1_000_0000000i128;
+        let payment = view0.monthly_amount + extra_principal;
+
+        let sac = token::StellarAssetClient::new(&env, &token_address);
+        sac.mint(&borrower, &payment);
+        client.repay(&borrower, &loan_id, &payment);
+
+        let loan_after = client.get_loan_info(&loan_id);
+        assert_eq!(loan_after.principal, principal - extra_principal);
+
+        // Still interest-only — only 1 of the 6 configured months elapsed.
+        let view_after = client.get_schedule_view(&loan_id).unwrap().unwrap();
+        assert_eq!(view_after.phase, LoanPhase::InterestOnly);
+    }
+
+    #[test]
+    fn test_interest_only_zero_months_preserves_existing_amortizing_behavior() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, investor, _treasury, token_address, client) = setup_pool(&env);
+
+        client.deposit(&investor, &100_000_0000000i128, &Tranche::Senior);
+        let borrower = Address::generate(&env);
+        let loan_id = mock_loan_id(&env);
+        let principal = 50_000_0000000i128;
+        client.request_loan(&borrower, &loan_id, &principal);
+        client.approve_loan(&loan_id); // defaults to interest_only_months = 0
+        let contractor = Address::generate(&env);
+        client.add_contractor(&contractor);
+        client.disburse(&loan_id, &contractor, &principal);
+
+        let view = client.get_schedule_view(&loan_id).unwrap().unwrap();
+        assert_eq!(view.phase, LoanPhase::Amortizing);
+        assert_eq!(view.interest_only_months, 0u32);
+
+        let sched = client.get_repayment_schedule(&loan_id).unwrap().unwrap();
+        assert_eq!(view.monthly_amount, sched.monthly_amount);
+
+        // A normal repayment behaves exactly as it always has: principal is
+        // untouched (the prepayment branch only ever runs during the
+        // InterestOnly phase), repaid/outstanding_debt move by `amount`.
+        let sac = token::StellarAssetClient::new(&env, &token_address);
+        sac.mint(&borrower, &sched.monthly_amount);
+        let repaid_before = client.get_loan_info(&loan_id).repaid;
+        client.repay(&borrower, &loan_id, &sched.monthly_amount);
+        let loan_after = client.get_loan_info(&loan_id);
+        assert_eq!(loan_after.principal, principal);
+        assert_eq!(loan_after.repaid, repaid_before + sched.monthly_amount);
     }
 }

@@ -113,6 +113,19 @@ pub enum PoolError {
     PayoffQuoteExpired = 52,
     /// Payoff quotes are disabled (window is zero) or the window is invalid.
     InvalidQuoteWindow = 53,
+    /// Invalid lockup tier selected.
+    InvalidLockupTier = 54,
+    /// Maximum allowed number of extensions on this loan exceeded.
+    ExtensionCapExceeded = 55,
+    /// Requested extension term exceeds the maximum permitted duration.
+    ExtensionTermTooLong = 56,
+    /// Loan is not in good standing (e.g. has missed payments).
+    LoanNotGoodStanding = 57,
+    /// Requested interest-only period exceeds the maximum permitted cap.
+    InterestOnlyCapExceeded = 58,
+    /// Withdrawal rejected: the position's lockup tier has not yet reached
+    /// its unlock ledger.
+    TieredLockupActive = 59,
 }
 
 #[contracterror]
