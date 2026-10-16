@@ -1,9 +1,9 @@
 {
   "GET /api/analytics/overview": {
-    "200": { "totalLoans": 12, "totalBorrowed": 950000, "averageInterestRate": 8.5 }
+    "200": { "tvl": { "escrow": "500000", "lendingPool": "450000", "total": "950000" }, "totalBorrowers": 8, "totalInvestors": 4, "totalLoans": 12 }
   },
   "POST /api/verification/check": {
-    "200": { "senderAddress": "GTEST", "recipientAddress": "GTEST2", "totalPayments": 1, "eligible": true, "reportId": "test-report", "reportHash": "test-hash" },
+    "200": { "senderAddress": "GTEST", "recipientAddress": "GTEST2", "totalPayments": 1, "eligible": true, "reportId": "test-report", "generatedAt": "2030-01-01T00:00:00.000Z", "reportHash": "test-hash" },
     "400": { "error": "invalid_request" }
   },
   "POST /api/verification/challenge": {
