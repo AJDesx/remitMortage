@@ -6,7 +6,7 @@ import { promisify } from "util";
 import { createReadStream, unlinkSync } from "fs";
 import { S3Client, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand, CopyObjectCommand } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
-import { createCipheriv, randomBytes, createHash } from "crypto";
+import { createCipheriv, createDecipheriv, randomBytes, createHash } from "crypto";
 import { loadConfig } from "../config.js";
 import logger from "../utils/logger.js";
 
@@ -261,6 +261,22 @@ export class DatabaseBackupService {
     return { archived, failed };
   }
 
+  /**
+   * Returns the most recently created backup's object key (by the timestamp
+   * embedded in its filename, not upload time), or null if no backup has
+   * ever been uploaded. Used by the restore drill to always exercise the
+   * backup that would actually be used in a real recovery, rather than a
+   * fixed or hand-picked one.
+   */
+  async getLatestBackupKey(): Promise<string | null> {
+    const keys = await this.listBackupKeys();
+    if (keys.length === 0) return null;
+
+    // Filenames are `backups/remitmortgage-backup-<ISO-with-dashes>.sql.enc`,
+    // so lexicographic order is chronological order.
+    return keys.slice().sort().at(-1) ?? null;
+  }
+
   private async listBackupKeys(): Promise<string[]> {
     const prefix = "backups/";
 
@@ -397,7 +413,13 @@ export class DatabaseBackupService {
   }
 
   /**
-   * Decrypts a file using AES-256-CBC
+   * Decrypts a file using AES-256-CBC.
+   *
+   * Mirrors encryptFile's format exactly: the key is sha256(decryptionKey)
+   * (not the raw passphrase) and the IV is the first 16 bytes of the file,
+   * prepended by encryptFile rather than derived — createDecipheriv needs
+   * both read off in the same way encryptFile wrote them, or the restore
+   * decrypts to garbage.
    */
   private async decryptFile(
     inputPath: string,
@@ -406,16 +428,20 @@ export class DatabaseBackupService {
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        const { createDecipher } = require("crypto");
-        const decipher = createDecipher("aes-256-cbc", decryptionKey);
-        const input = createReadStream(inputPath);
+        const fileData = require("fs").readFileSync(inputPath);
+        const iv = fileData.subarray(0, 16);
+        const ciphertext = fileData.subarray(16);
+
+        const key = createHash("sha256").update(decryptionKey).digest();
+        const decipher = createDecipheriv("aes-256-cbc", key, iv);
         const output = require("fs").createWriteStream(outputPath);
 
-        input
-          .pipe(decipher)
-          .pipe(output)
-          .on("finish", () => resolve())
-          .on("error", reject);
+        output.on("finish", () => resolve());
+        output.on("error", reject);
+        decipher.on("error", reject);
+
+        decipher.pipe(output);
+        decipher.end(ciphertext);
       } catch (error) {
         reject(error);
       }

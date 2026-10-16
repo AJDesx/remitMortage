@@ -18,6 +18,7 @@
     "drift:sync": "bash ./scripts/sync-production-schema.sh --from-schema=prisma/schema.prisma",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
+    "backup:restore-drill": "tsx scripts/restore-latest-backup.ts",
     "anonymize:staging-seed": "tsx scripts/anonymize-staging-seed.ts",
     "load-test": "tsx load-tests/run-all.ts",
     "load-test:health": "tsx load-tests/scenarios/health-read.ts",
