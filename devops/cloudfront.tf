@@ -22,6 +22,153 @@ locals {
   cache_policy_disabled  = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
 }
 
+resource "aws_wafv2_web_acl" "public_api" {
+  provider = aws
+  name     = "remitmortgage-public-api-${var.environment}"
+  scope    = "CLOUDFRONT"
+
+  default_action { allow {} }
+
+  rule {
+    name     = "aws-managed-common-rules"
+    priority = 10
+    dynamic "override_action" {
+      for_each = var.waf_enforce_blocking ? [] : [true]
+      content { count {} }
+    }
+    dynamic "action" {
+      for_each = var.waf_enforce_blocking ? [true] : []
+      content { block {} }
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "public-api-common-rules"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "api-rate-limit"
+    priority = 20
+    action {
+      dynamic "block" {
+        for_each = var.waf_enforce_blocking ? [true] : []
+        content {}
+      }
+      dynamic "count" {
+        for_each = var.waf_enforce_blocking ? [] : [true]
+        content {}
+      }
+    }
+    statement {
+      rate_based_statement {
+        limit              = var.waf_rate_limit_per_five_minutes
+        aggregate_key_type = "IP"
+        scope_down_statement {
+          byte_match_statement {
+            field_to_match { uri_path {} }
+            positional_constraint = "STARTS_WITH"
+            search_string         = "/api/"
+            text_transformation { priority = 0 type = "NONE" }
+          }
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "public-api-rate-limit"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  dynamic "rule" {
+    for_each = length(var.waf_blocked_country_codes) > 0 ? [true] : []
+    content {
+      name     = "blocked-geo-countries"
+      priority = 30
+      action {
+        dynamic "block" {
+          for_each = var.waf_enforce_blocking ? [true] : []
+          content {}
+        }
+        dynamic "count" {
+          for_each = var.waf_enforce_blocking ? [] : [true]
+          content {}
+        }
+      }
+      statement {
+        geo_match_statement { country_codes = var.waf_blocked_country_codes }
+      }
+      visibility_config {
+        cloudwatch_metrics_enabled = true
+        metric_name                = "public-api-geo-rule"
+        sampled_requests_enabled   = true
+      }
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "remitmortgage-public-api"
+    sampled_requests_enabled   = true
+  }
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
+  resource_arn            = aws_wafv2_web_acl.public_api.arn
+  log_destination_configs = [aws_s3_bucket.waf_logs.arn]
+}
+
+resource "aws_s3_bucket" "waf_logs" {
+  bucket = "aws-waf-logs-remitmortgage-${var.environment}"
+  tags = {
+    Name        = "aws-waf-logs-remitmortgage-${var.environment}"
+    Environment = var.environment
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "waf_logs" {
+  bucket = aws_s3_bucket.waf_logs.id
+  rule {
+    apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "waf_logs" {
+  bucket = aws_s3_bucket.waf_logs.id
+  rule {
+    id     = "expire-waf-logs"
+    status = "Enabled"
+    expiration { days = 90 }
+  }
+}
+
+data "aws_iam_policy_document" "waf_logs" {
+  statement {
+    sid    = "AllowWafLogDelivery"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["delivery.logs.amazonaws.com"]
+    }
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.waf_logs.arn}/*"]
+  }
+}
+
+resource "aws_s3_bucket_policy" "waf_logs" {
+  bucket = aws_s3_bucket.waf_logs.id
+  policy = data.aws_iam_policy_document.waf_logs.json
+}
+
 # ── Custom cache policy for immutable Next.js build assets ─────────────
 resource "aws_cloudfront_cache_policy" "nextjs_static_immutable" {
   name        = "NextJsStaticImmutable-${var.environment}"
@@ -48,6 +195,7 @@ resource "aws_cloudfront_cache_policy" "nextjs_static_immutable" {
 # ── CloudFront distribution ────────────────────────────────────────────
 resource "aws_cloudfront_distribution" "frontend" {
   enabled     = true
+  web_acl_id  = aws_wafv2_web_acl.public_api.arn
   comment     = "RemitMortage Next.js frontend – ${var.environment}"
   price_class = "PriceClass_All" # all edge locations globally
   aliases     = compact([var.app_domain_name, var.www_domain_name])

@@ -14,6 +14,8 @@ horizontal pod autoscaling.
 | `backend-canary-ingress.yaml` | Nginx Ingress annotations for weighted traffic splitting (5% / 25% / 100%) |
 | `backend-hpa.yaml` | HorizontalPodAutoscaler: 2–10 replicas, scale at 80% CPU and 85% Memory |
 | `loadtest-job.yaml` | Job that generates mock request load to verify scale-up |
+| `worker-scaledobject.yaml` | KEDA Redis queue-depth scaler for notifications, webhooks, and analytics |
+| `policy/verify-image-signatures.yaml` | Kyverno admission policy for signed images and SPDX attestations |
 | `anonymized-staging-seed-cronjob.yaml` | Weekly CronJob (staging cluster only) that refreshes the staging DB with an anonymized copy of production data — see [docs/DATA_ANONYMIZATION_PIPELINE.md](../../docs/DATA_ANONYMIZATION_PIPELINE.md) |
 
 ## Canary Deployment & Automated Traffic Ramp-Up (#457)
@@ -40,6 +42,23 @@ On rollback:
 ```bash
 ./scripts/canary-ramp.sh
 ```
+
+## Queue worker autoscaling
+
+Install KEDA before applying `worker-scaledobject.yaml`. The scaler watches the
+BullMQ `wait` list for each worker queue, scales from 2 to 20 replicas, and
+keeps five minutes of scale-down stabilization so a drained queue does not
+cause replica thrashing.
+
+```bash
+kubectl apply -f https://github.com/kedacore/keda/releases/latest/download/keda-2.16.1.yaml
+kubectl apply -f devops/k8s/worker-scaledobject.yaml
+kubectl get scaledobject remitmortgage-workers
+```
+
+Build a backlog with the existing webhook or analytics load test and verify
+`kubectl get hpa -l app.kubernetes.io/managed-by=keda --watch` grows replicas;
+stop the producer and verify they return to two after the cooldown window.
 
 ## Prerequisites
 

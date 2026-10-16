@@ -1,0 +1,37 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-remitmortgage-images
+  annotations:
+    policies.kyverno.io/title: Verify signed RemitMortgage images
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Enforce
+  background: true
+  webhookConfiguration:
+    failurePolicy: Fail
+  rules:
+    - name: verify-github-signed-images
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [remitmortgage]
+      verifyImages:
+        - imageReferences: ["public.ecr.aws/remitmortgage/*"]
+          required: true
+          mutateDigest: true
+          verifyDigest: true
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: "https://github.com/AstronLabs/remitMortage/.github/workflows/container-signing.yml@refs/heads/main"
+          attestations:
+            - predicateType: https://spdx.dev/Document
+              attestors:
+                - entries:
+                    - keyless:
+                        issuer: https://token.actions.githubusercontent.com
+                        subject: "https://github.com/AstronLabs/remitMortage/.github/workflows/container-signing.yml@refs/heads/main"

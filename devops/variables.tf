@@ -96,6 +96,42 @@ variable "certificate_arn" {
   type        = string
 }
 
+variable "waf_enforce_blocking" {
+  description = "Switch WAF custom rules from count mode to blocking after false-positive review"
+  type        = bool
+  default     = false
+}
+
+variable "waf_rate_limit_per_five_minutes" {
+  description = "Maximum API requests per IP in a five-minute WAF window"
+  type        = number
+  default     = 1000
+}
+
+variable "waf_blocked_country_codes" {
+  description = "ISO 3166-1 alpha-2 country codes to count/block for public API traffic"
+  type        = list(string)
+  default     = []
+}
+
+variable "backup_bucket_name" {
+  description = "Existing primary S3 bucket containing encrypted database backups"
+  type        = string
+  default     = ""
+}
+
+variable "backup_replica_bucket_name" {
+  description = "Secondary-region S3 bucket for replicated encrypted backups"
+  type        = string
+  default     = ""
+}
+
+variable "backup_replication_lag_threshold_seconds" {
+  description = "Replication lag threshold for the recovery point objective alarm"
+  type        = number
+  default     = 900
+}
+
 # ── AWS Cost Anomaly Detection & Alerting ───────────────────────────────
 
 variable "cost_anomaly_threshold_amount" {

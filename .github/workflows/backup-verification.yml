@@ -159,6 +159,8 @@ jobs:
       SANDBOX_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/remitmortgage_sandbox
       BACKUP_PROVIDER: aws
       BACKUP_BUCKET: ${{ secrets.BACKUP_BUCKET }}
+      BACKUP_REPLICA_BUCKET: ${{ secrets.BACKUP_REPLICA_BUCKET }}
+      BACKUP_REPLICA_REGION: ${{ vars.BACKUP_REPLICA_REGION || 'eu-west-1' }}
       BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
       RESTORED_INFO_PATH: backup-drill-restored.json
       REPORT_PATH: backup-sanity-report.txt
@@ -201,12 +203,26 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
+      - name: Verify replicated backup object is reachable
+        run: |
+          aws s3api head-bucket --bucket "$BACKUP_REPLICA_BUCKET" --region "$BACKUP_REPLICA_REGION"
+          aws s3api list-objects-v2 --bucket "$BACKUP_REPLICA_BUCKET" --prefix backups/ --region "$BACKUP_REPLICA_REGION" --max-items 1 --query 'Contents[0].Key' --output text | grep -v '^None$'
+
+      - name: Configure replica-region AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.BACKUP_REPLICA_REGION }}
+
       - name: Restore Latest Production Backup
         id: restore
         run: npx tsx scripts/restore-latest-backup.ts --out "../${{ env.RESTORED_INFO_PATH }}"
         working-directory: backend
         env:
           DATABASE_URL: ${{ env.SANDBOX_DATABASE_URL }}
+          BACKUP_BUCKET: ${{ env.BACKUP_REPLICA_BUCKET }}
+          AWS_REGION: ${{ env.BACKUP_REPLICA_REGION }}
 
       - name: Run Sanity Checks
         id: sanity
