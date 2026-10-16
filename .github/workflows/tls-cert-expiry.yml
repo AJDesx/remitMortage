@@ -24,6 +24,9 @@ on:
       - 'scripts/check-tls-cert-expiry.sh'
       - 'devops/tls-monitor-domains.txt'
 
+permissions:
+  contents: read
+
 concurrency:
   group: tls-cert-expiry-${{ github.ref }}
   cancel-in-progress: true

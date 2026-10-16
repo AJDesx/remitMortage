@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main, development ]
 
+permissions:
+  contents: read
+
 jobs:
   visual-regression:
     name: Visual Regression (Percy)

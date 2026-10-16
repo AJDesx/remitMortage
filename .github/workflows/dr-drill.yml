@@ -31,6 +31,9 @@ on:
       - 'scripts/dr-drill.sh'
       - 'devops/MULTI_REGION_FAILOVER_GUIDE.md'
 
+permissions:
+  contents: read
+
 env:
   AWS_REGION: us-east-1
   SECONDARY_REGION: eu-west-1
