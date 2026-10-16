@@ -4,7 +4,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import {
   AreaChart,
@@ -18,6 +18,8 @@ import {
   Pie,
   Cell,
 } from "recharts";
+import ChartExportControls from "@/components/charts/ChartExportControls";
+import type { ChartExportData, ChartSeries } from "@/lib/chart-export";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 const RateBenchmarkWidget = dynamic(
@@ -107,6 +109,37 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
+  const volumeChartRef = useRef<HTMLDivElement>(null);
+  const performanceChartRef = useRef<HTMLDivElement>(null);
+
+  // CSV exports mirror exactly what each chart draws, so the file always
+  // matches the on-screen data.
+  const volumeExportData = useMemo<ChartExportData>(
+    () => ({
+      columns: ["Month", "Deposits (USDC)", "Repayments (USDC)", "Disbursements (USDC)"],
+      rows: volumeData.map((d) => [d.month, d.deposits, d.repayments, d.disbursements]),
+    }),
+    [volumeData]
+  );
+  const volumeLegend = useMemo<ChartSeries[]>(
+    () => [
+      { label: "Deposits", color: "#6366f1" },
+      { label: "Disbursed", color: "#06b6d4" },
+      { label: "Repayments", color: "#10b981" },
+    ],
+    []
+  );
+  const performanceExportData = useMemo<ChartExportData>(
+    () => ({
+      columns: ["Loan status", "Share of pool (%)"],
+      rows: loanPerformance.map((d) => [d.name, d.value]),
+    }),
+    [loanPerformance]
+  );
+  const performanceLegend = useMemo<ChartSeries[]>(
+    () => loanPerformance.map((d) => ({ label: `${d.name} (${d.value}%)`, color: d.color })),
+    [loanPerformance]
+  );
 
   useEffect(() => {
     setMounted(true);
@@ -291,15 +324,25 @@ export default function AnalyticsPage() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-10">
               {/* Volume Area Chart */}
               <div className="glass-card p-6 lg:col-span-2 flex flex-col justify-between">
-                <div className="mb-4">
-                  <h3 className="text-lg font-bold text-[var(--text-primary)]">
-                    Volume Trends (USDC)
-                  </h3>
-                  <p className="text-xs text-[var(--text-secondary)]">
-                    Monthly deposit, repayment, and disbursement volumes
-                  </p>
+                <div className="mb-4 flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-lg font-bold text-[var(--text-primary)]">
+                      Volume Trends (USDC)
+                    </h3>
+                    <p className="text-xs text-[var(--text-secondary)]">
+                      Monthly deposit, repayment, and disbursement volumes
+                    </p>
+                  </div>
+                  <ChartExportControls
+                    chartTitle="Volume Trends (USDC)"
+                    fileBase="volume-trends"
+                    data={volumeExportData}
+                    legend={volumeLegend}
+                    getChartContainer={() => volumeChartRef.current}
+                    disabled={!mounted || volumeData.length === 0}
+                  />
                 </div>
-                <div className="h-[300px] w-full">
+                <div ref={volumeChartRef} className="h-[300px] w-full">
                   {mounted && volumeData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
                       <AreaChart
@@ -375,13 +418,26 @@ export default function AnalyticsPage() {
 
               {/* Loan Performance Pie Chart */}
               <div className="glass-card p-6 flex flex-col justify-between">
-                <div className="mb-2">
-                  <h3 className="text-lg font-bold text-[var(--text-primary)]">Loan Performance</h3>
-                  <p className="text-xs text-[var(--text-secondary)]">
-                    Distribution of active, repaid, and defaulted loans
-                  </p>
+                <div className="mb-2 flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-lg font-bold text-[var(--text-primary)]">Loan Performance</h3>
+                    <p className="text-xs text-[var(--text-secondary)]">
+                      Distribution of active, repaid, and defaulted loans
+                    </p>
+                  </div>
+                  <ChartExportControls
+                    chartTitle="Loan Performance"
+                    fileBase="loan-performance"
+                    data={performanceExportData}
+                    legend={performanceLegend}
+                    getChartContainer={() => performanceChartRef.current}
+                    disabled={!mounted || loanPerformance.length === 0}
+                  />
                 </div>
-                <div className="h-[240px] flex items-center justify-center relative">
+                <div
+                  ref={performanceChartRef}
+                  className="h-[240px] flex items-center justify-center relative"
+                >
                   {mounted && loanPerformance.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
