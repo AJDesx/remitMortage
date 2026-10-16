@@ -8,6 +8,9 @@ on:
       - "backend/**"
       - ".github/workflows/e2e-onboarding.yml"
 
+permissions:
+  contents: read
+
 concurrency:
   group: e2e-onboarding-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

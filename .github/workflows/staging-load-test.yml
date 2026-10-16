@@ -6,6 +6,9 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   bulk-approval-staging-load-test:
     name: Run concurrent admin bulk approval load test

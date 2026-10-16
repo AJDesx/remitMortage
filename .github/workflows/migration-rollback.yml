@@ -25,6 +25,9 @@ on:
       - ".github/workflows/migration-rollback.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: migration-rollback-${{ github.ref }}
   cancel-in-progress: true
