@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # =============================================================================
 # Stage 1 — deps
 # Install *all* node_modules (including devDependencies) so the build stage
@@ -17,7 +18,9 @@ COPY package.json package-lock.json* ./
 
 # Install with a frozen lockfile — fails fast if lock is stale rather than
 # silently upgrading packages.
-RUN npm ci --frozen-lockfile
+# BuildKit cache mount keeps npm's download cache out of the image layers.
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --frozen-lockfile
 
 
 # =============================================================================
