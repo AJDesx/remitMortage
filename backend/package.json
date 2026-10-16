@@ -103,6 +103,9 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
+    "setupFilesAfterEnv": [
+      "<rootDir>/test/flakyQuarantine.cjs"
+    ],
     "roots": [
       "<rootDir>/src"
     ],
