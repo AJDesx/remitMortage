@@ -1,0 +1,22 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`audit log CSV export format stability matches the snapshot for a representative, mixed-shape batch 1`] = `
+"ID,Action,Actor Address,IP Address,Metadata,Created At
+audit-001,loan_approved,GABCDEF1234567890,203.0.113.10,"{""loanId"":""loan-9001"",""amount"":250000,""currency"":""USD""}",2026-01-15T09:30:00.000Z
+audit-002,note_added,,,"{""note"":""Escalated to underwriting, pending docs""}",2026-01-15T10:05:00.000Z
+audit-003,kyc_flagged,GXYZ0000000000000,198.51.100.23,"{""reasons"":[""expired_id"",""address_mismatch""],""reviewer"":""system""}",2026-01-15T11:45:00.000Z
+audit-004,comment,GQRS111122223333,192.0.2.5,{},2026-01-15T12:00:00.000Z
+audit-005,applicant_renamed,GUNI444455556666,192.0.2.9,"{""previousName"":""José Álvarez"",""newName"":""何塞""}",2026-01-15T13:20:00.000Z"
+`;
+
+exports[`audit log CSV export format stability matches the snapshot for a single, simple record 1`] = `
+"ID,Action,Actor Address,IP Address,Metadata,Created At
+audit-000,login,GSIMPLE00000000000000000000000000000000000000000,192.0.2.1,"{""method"":""passkey""}",2026-01-10T08:00:00.000Z"
+`;
+
+exports[`audit log CSV export format stability matches the snapshot for an empty result set 1`] = `"ID,Action,Actor Address,IP Address,Metadata,Created At"`;
+
+exports[`audit log CSV export format stability matches the snapshot for metadata requiring comma/quote/newline escaping 1`] = `
+"ID,Action,Actor Address,IP Address,Metadata,Created At
+audit-010,manual_override,GESC1234567890,203.0.113.55,"{""description"":""Reviewer noted: \\""escalate, do not close\\"" before EOD\\nfollow up tomorrow""}",2026-01-20T16:00:00.000Z"
+`;

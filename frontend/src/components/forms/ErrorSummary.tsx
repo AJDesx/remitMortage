@@ -2,12 +2,15 @@
 
 import { useEffect, useRef } from "react";
 import type { FieldErrors, FieldValues } from "react-hook-form";
+import HelpLink from "@/components/help/HelpLink";
 
 type ErrorSummaryProps<T extends FieldValues> = {
   errors: FieldErrors<T>;
   labels: Partial<Record<keyof T, string>>;
   announcementKey: number;
   onFieldSelect: (name: keyof T & string) => void;
+  /** Optional contextual help key; renders a Help Center link under the errors. */
+  helpContext?: string;
 };
 
 export default function ErrorSummary<T extends FieldValues>({
@@ -15,6 +18,7 @@ export default function ErrorSummary<T extends FieldValues>({
   labels,
   announcementKey,
   onFieldSelect,
+  helpContext,
 }: ErrorSummaryProps<T>) {
   const announcementRef = useRef<HTMLDivElement>(null);
   const previousCount = useRef(0);
@@ -89,6 +93,11 @@ export default function ErrorSummary<T extends FieldValues>({
               </li>
             ))}
           </ul>
+          {helpContext && (
+            <div className="mt-3 border-t border-red-400/20 pt-3">
+              <HelpLink context={helpContext} />
+            </div>
+          )}
         </section>
       )}
     </>

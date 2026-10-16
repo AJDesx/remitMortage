@@ -17,6 +17,10 @@ import useTransactionHistoryFilters, {
   type SortField,
   type TxCategory,
 } from "@/hooks/useTransactionHistoryFilters";
+import { useColumnPreferences } from "@/hooks/useColumnPreferences";
+import ColumnManager from "@/components/tables/ColumnManager";
+import ColumnResizeHandle from "@/components/tables/ColumnResizeHandle";
+import type { ColumnDefinition } from "@/lib/column-preferences";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
 
@@ -109,6 +113,91 @@ export default function HistoryClient() {
   const { filters, updateFilters, setSortField } = useTransactionHistoryFilters(1000000);
   const sliderMaxRef = useRef(1000000);
 
+  // Transaction table columns — customizable (show/hide, reorder, resize)
+  // per user. "Transaction" is required so the row always links to the
+  // underlying Horizon transaction.
+  const txColumns = useMemo<ColumnDefinition<TxRecord>[]>(
+    () => [
+      {
+        id: "date",
+        header: "Date",
+        defaultWidth: 140,
+        render: (tx) => (
+          <span className="text-[var(--text-secondary)] whitespace-nowrap">
+            {formatDate(tx.date)}
+          </span>
+        ),
+      },
+      {
+        id: "type",
+        header: "Type",
+        defaultWidth: 130,
+        render: (tx) => (
+          <span
+            className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${CATEGORY_STYLES[tx.category]}`}
+          >
+            {tx.category.slice(0, -1)}
+          </span>
+        ),
+      },
+      {
+        id: "amount",
+        header: "Amount",
+        defaultWidth: 150,
+        align: "right",
+        render: (tx) => (
+          <span
+            className={`font-medium tabular-nums ${
+              tx.from === publicKey ? "text-[var(--text-primary)]" : "text-emerald-400"
+            }`}
+          >
+            {tx.from === publicKey ? "−" : "+"}
+            {tx.amount} USDC
+          </span>
+        ),
+      },
+      {
+        id: "status",
+        header: "Status",
+        defaultWidth: 120,
+        render: (tx) => (
+          <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            {tx.status}
+          </span>
+        ),
+      },
+      {
+        id: "transaction",
+        header: "Transaction",
+        defaultWidth: 160,
+        required: true,
+        render: (tx) => (
+          <a
+            href={`${STELLARCHAIN_BASE}${tx.hash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-mono text-[var(--accent-primary-light)] hover:underline text-xs"
+            title={tx.hash}
+          >
+            {shorten(tx.hash)}
+          </a>
+        ),
+      },
+    ],
+    [publicKey]
+  );
+
+  const {
+    preferences: txPreferences,
+    columns: visibleTxColumns,
+    announcement: txAnnouncement,
+    toggleColumn: toggleTxColumn,
+    moveColumn: moveTxColumn,
+    resizeColumn: resizeTxColumn,
+    resetToDefaults: resetTxColumns,
+  } = useColumnPreferences("history-transactions", publicKey, txColumns);
+
   // Presets
   const [presets, setPresets] = useState<FilterPreset[]>([]);
   const [showPresetModal, setShowPresetModal] = useState(false);
@@ -168,11 +257,7 @@ export default function HistoryClient() {
 
   function handleRenamePreset(id: string) {
     if (!editingPresetName.trim()) return;
-    savePresets(
-      presets.map((p) =>
-        p.id === id ? { ...p, name: editingPresetName.trim() } : p
-      )
-    );
+    savePresets(presets.map((p) => (p.id === id ? { ...p, name: editingPresetName.trim() } : p)));
     setEditingPresetId(null);
   }
 
@@ -434,9 +519,13 @@ export default function HistoryClient() {
             <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-5 mb-6">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-5 gap-3">
                 <div className="flex items-center gap-3 w-full sm:w-auto">
-                  <span className="text-sm font-semibold text-[var(--text-primary)]">Filter Presets:</span>
+                  <span className="text-sm font-semibold text-[var(--text-primary)]">
+                    Filter Presets:
+                  </span>
                   {presets.length === 0 ? (
-                    <span className="text-xs text-[var(--text-muted)] italic">No presets saved</span>
+                    <span className="text-xs text-[var(--text-muted)] italic">
+                      No presets saved
+                    </span>
                   ) : (
                     <div className="flex-1 sm:flex-none relative group">
                       <select
@@ -450,7 +539,9 @@ export default function HistoryClient() {
                         }}
                         defaultValue=""
                       >
-                        <option value="" disabled>Load a preset...</option>
+                        <option value="" disabled>
+                          Load a preset...
+                        </option>
                         {presets.map((p) => (
                           <option key={p.id} value={p.id}>
                             {p.name}
@@ -458,7 +549,19 @@ export default function HistoryClient() {
                         ))}
                       </select>
                       <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-[var(--text-muted)]">
-                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                        <svg
+                          className="h-4 w-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="2"
+                            d="M19 9l-7 7-7-7"
+                          ></path>
+                        </svg>
                       </div>
                     </div>
                   )}
@@ -478,6 +581,15 @@ export default function HistoryClient() {
                   >
                     + Save Current Filters
                   </button>
+                  <ColumnManager
+                    tableLabel="transactions"
+                    allColumns={txColumns}
+                    preferences={txPreferences}
+                    onToggle={toggleTxColumn}
+                    onMove={moveTxColumn}
+                    onReset={resetTxColumns}
+                    announcement={txAnnouncement}
+                  />
                 </div>
               </div>
 
@@ -546,7 +658,8 @@ export default function HistoryClient() {
                     />
                   </div>
                   <div className="mt-3 text-[var(--text-muted)] text-xs">
-                    Showing values between {filters.amountMin.toLocaleString()} and {filters.amountMax.toLocaleString()} USDC.
+                    Showing values between {filters.amountMin.toLocaleString()} and{" "}
+                    {filters.amountMax.toLocaleString()} USDC.
                   </div>
                 </div>
 
@@ -566,7 +679,11 @@ export default function HistoryClient() {
                     </select>
                     <button
                       type="button"
-                      onClick={() => updateFilters({ sortDirection: filters.sortDirection === "asc" ? "desc" : "asc" })}
+                      onClick={() =>
+                        updateFilters({
+                          sortDirection: filters.sortDirection === "asc" ? "desc" : "asc",
+                        })
+                      }
                       className="inline-flex items-center gap-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent-primary)] transition-colors"
                     >
                       {filters.sortDirection === "asc" ? "Ascending" : "Descending"}
@@ -617,11 +734,27 @@ export default function HistoryClient() {
                       <table className="w-full text-sm">
                         <thead>
                           <tr className="border-b border-[var(--border-color)] text-[var(--text-muted)] text-xs uppercase tracking-wider">
-                            <th className="px-5 py-3 text-left font-medium">Date</th>
-                            <th className="px-5 py-3 text-left font-medium">Type</th>
-                            <th className="px-5 py-3 text-right font-medium">Amount</th>
-                            <th className="px-5 py-3 text-left font-medium">Status</th>
-                            <th className="px-5 py-3 text-left font-medium">Transaction</th>
+                            {visibleTxColumns.map((column) => {
+                              const width = txPreferences.widths[column.id] ?? column.defaultWidth;
+                              return (
+                                <th
+                                  key={column.id}
+                                  scope="col"
+                                  style={width ? { width } : undefined}
+                                  className={`relative px-5 py-3 font-medium ${
+                                    column.align === "right" ? "text-right" : "text-left"
+                                  }`}
+                                >
+                                  {column.header}
+                                  <ColumnResizeHandle
+                                    columnHeader={column.header}
+                                    width={width}
+                                    minWidth={column.minWidth}
+                                    onResize={(nextWidth) => resizeTxColumn(column.id, nextWidth)}
+                                  />
+                                </th>
+                              );
+                            })}
                           </tr>
                         </thead>
                         <tbody>
@@ -630,49 +763,16 @@ export default function HistoryClient() {
                               key={tx.id}
                               className="border-b border-[var(--border-color)]/40 last:border-0 hover:bg-[var(--bg-card-hover)] transition-colors"
                             >
-                              <td className="px-5 py-4 text-[var(--text-secondary)] whitespace-nowrap">
-                                {formatDate(tx.date)}
-                              </td>
-
-                              <td className="px-5 py-4">
-                                <span
-                                  className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${CATEGORY_STYLES[tx.category]}`}
+                              {visibleTxColumns.map((column) => (
+                                <td
+                                  key={column.id}
+                                  className={`px-5 py-4 ${
+                                    column.align === "right" ? "text-right" : "text-left"
+                                  }`}
                                 >
-                                  {tx.category.slice(0, -1)}
-                                </span>
-                              </td>
-
-                              <td className="px-5 py-4 text-right font-medium tabular-nums">
-                                <span
-                                  className={
-                                    tx.from === publicKey
-                                      ? "text-[var(--text-primary)]"
-                                      : "text-emerald-400"
-                                  }
-                                >
-                                  {tx.from === publicKey ? "−" : "+"}
-                                  {tx.amount} USDC
-                                </span>
-                              </td>
-
-                              <td className="px-5 py-4">
-                                <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                                  {tx.status}
-                                </span>
-                              </td>
-
-                              <td className="px-5 py-4">
-                                <a
-                                  href={`${STELLARCHAIN_BASE}${tx.hash}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="font-mono text-[var(--accent-primary-light)] hover:underline text-xs"
-                                  title={tx.hash}
-                                >
-                                  {shorten(tx.hash)}
-                                </a>
-                              </td>
+                                  {column.render(tx)}
+                                </td>
+                              ))}
                             </tr>
                           ))}
                         </tbody>
@@ -714,7 +814,14 @@ export default function HistoryClient() {
                   }}
                   className="text-[var(--text-muted)] hover:text-white transition-colors"
                 >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M6 18L18 6M6 6l12 12"
+                    ></path>
+                  </svg>
                 </button>
               </div>
 
@@ -749,7 +856,10 @@ export default function HistoryClient() {
                   </h4>
                   <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                     {presets.map((p) => (
-                      <div key={p.id} className="flex items-center justify-between bg-[var(--bg-secondary)] p-2.5 rounded-lg border border-[var(--border-color)] group">
+                      <div
+                        key={p.id}
+                        className="flex items-center justify-between bg-[var(--bg-secondary)] p-2.5 rounded-lg border border-[var(--border-color)] group"
+                      >
                         {editingPresetId === p.id ? (
                           <div className="flex flex-1 items-center gap-2 mr-2">
                             <input
@@ -771,7 +881,10 @@ export default function HistoryClient() {
                             </button>
                           </div>
                         ) : (
-                          <span className="text-sm text-white truncate max-w-[200px]" title={p.name}>
+                          <span
+                            className="text-sm text-white truncate max-w-[200px]"
+                            title={p.name}
+                          >
                             {p.name}
                           </span>
                         )}
@@ -786,14 +899,38 @@ export default function HistoryClient() {
                               className="p-1.5 text-[var(--text-muted)] hover:text-white bg-[var(--bg-card-hover)] rounded-md transition-colors"
                               title="Rename"
                             >
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                              <svg
+                                className="w-3.5 h-3.5"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth="2"
+                                  d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
+                                ></path>
+                              </svg>
                             </button>
                             <button
                               onClick={() => handleDeletePreset(p.id)}
                               className="p-1.5 text-red-400/70 hover:text-red-400 bg-red-400/10 hover:bg-red-400/20 rounded-md transition-colors"
                               title="Delete"
                             >
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                              <svg
+                                className="w-3.5 h-3.5"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth="2"
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                ></path>
+                              </svg>
                             </button>
                           </div>
                         )}
