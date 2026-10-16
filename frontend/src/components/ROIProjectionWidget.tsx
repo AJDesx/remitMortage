@@ -2,7 +2,7 @@
 // Copyright (c) 2026 RemitMortgage Protocol Contributors
 // SPDX-License-Identifier: MIT
 
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AreaChart,
   Area,
@@ -13,6 +13,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Loader2 } from "lucide-react";
+import ChartExportControls from "@/components/charts/ChartExportControls";
+import type { ChartExportData, ChartSeries } from "@/lib/chart-export";
 
 type TimeRange = "1m" | "6m" | "1y" | "Max";
 
@@ -140,6 +142,29 @@ export default function ROIProjectionWidget({
     return "$" + val.toLocaleString("en-US", { maximumFractionDigits: 0 });
   };
 
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+
+  // CSV export mirrors the chart's current view: `chartData` is already
+  // sliced to the selected time range, so the file respects the filter.
+  const exportData = useMemo<ChartExportData>(
+    () => ({
+      columns: ["Month", "Historical value (USDC)", "Projected value (USDC)"],
+      rows: chartData.map((point) => [
+        point.date,
+        point.historicalValue ?? "",
+        point.projectedValue ?? "",
+      ]),
+    }),
+    [chartData]
+  );
+  const exportLegend = useMemo<ChartSeries[]>(
+    () => [
+      { label: "Historical Value", color: "#06b6d4" },
+      { label: "Projected Value", color: "#6366f1" },
+    ],
+    []
+  );
+
   return (
     <div className="p-6 bg-slate-900/80 rounded-2xl border border-slate-800 backdrop-blur-xl mt-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
@@ -150,20 +175,31 @@ export default function ROIProjectionWidget({
           </p>
         </div>
 
-        <div className="flex p-1 bg-slate-950 border border-slate-800 rounded-lg shrink-0">
-          {(["1m", "6m", "1y", "Max"] as TimeRange[]).map((tr) => (
-            <button
-              key={tr}
-              onClick={() => setTimeRange(tr)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
-                timeRange === tr
-                  ? "bg-indigo-500 text-white shadow-sm"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              {tr}
-            </button>
-          ))}
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex p-1 bg-slate-950 border border-slate-800 rounded-lg shrink-0">
+            {(["1m", "6m", "1y", "Max"] as TimeRange[]).map((tr) => (
+              <button
+                key={tr}
+                onClick={() => setTimeRange(tr)}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                  timeRange === tr
+                    ? "bg-indigo-500 text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                {tr}
+              </button>
+            ))}
+          </div>
+          <ChartExportControls
+            chartTitle={`Portfolio ROI Projection (${timeRange})`}
+            fileBase="roi-projection"
+            data={exportData}
+            legend={exportLegend}
+            getChartContainer={() => chartContainerRef.current}
+            timeRange={timeRange.toLowerCase()}
+            disabled={loading || !!error || chartData.length === 0}
+          />
         </div>
       </div>
 
@@ -187,7 +223,7 @@ export default function ROIProjectionWidget({
         </span>
       </div>
 
-      <div className="h-[280px] w-full relative">
+      <div ref={chartContainerRef} className="h-[280px] w-full relative">
         {loading ? (
           <div className="absolute inset-0 flex items-center justify-center bg-slate-900/50 rounded-xl animate-pulse">
             <Loader2 className="w-6 h-6 animate-spin text-indigo-400" />
