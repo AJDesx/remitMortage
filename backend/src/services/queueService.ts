@@ -3,6 +3,12 @@
 
 import { Queue, QueueOptions, Job, JobsOptions } from "bullmq";
 import { getClusterClient, isClusterMode, getClusterStatus } from "./redisCluster.js";
+import {
+  FairQueueScheduler,
+  JobPriorityClass,
+  type StarvationReport,
+  type WaitTimeStats,
+} from "./queueFairness.js";
 import logger from "../utils/logger.js";
 
 export type NotificationJobType = "EMAIL" | "WEBHOOK" | "SMS" | "PUSH";
@@ -63,6 +69,26 @@ const DEFAULT_JOB_OPTIONS: JobsOptions = {
   removeOnComplete: 100,
   removeOnFail: 50,
 };
+
+/**
+ * Fairness policy shared by the queues (issue #862): priority classes,
+ * per-tenant concurrency caps, wait-time metrics and starvation detection.
+ */
+export const fairQueue = new FairQueueScheduler({
+  perTenantCap: Number(process.env.QUEUE_PER_TENANT_CAP || 10),
+  starvationThresholdMs: Number(process.env.QUEUE_STARVATION_THRESHOLD_MS || 30_000),
+});
+
+/** BullMQ options for a priority class (lower number = higher priority). */
+export function priorityOptions(priority: JobPriorityClass): JobsOptions {
+  return { priority };
+}
+
+export interface FairnessMetrics {
+  waitByPriority: Record<JobPriorityClass, WaitTimeStats>;
+  waitingByPriority: Record<JobPriorityClass, number>;
+  starvation: StarvationReport;
+}
 
 function buildConnection(): QueueOptions["connection"] {
   const client = getClusterClient();
@@ -215,6 +241,19 @@ class QueueService {
       notificationCounts: { waiting: nWaiting, active: nActive, failed: nFailed, completed: nCompleted },
       webhookCounts: { waiting: wWaiting, active: wActive, failed: wFailed, completed: wCompleted },
       emailCounts: { waiting: eWaiting, active: eActive, failed: eFailed, completed: eCompleted },
+    };
+  }
+
+  /**
+   * Fairness snapshot for the queues (issue #862): observed wait time per
+   * priority class, the current waiting mix, and a starvation report the
+   * metrics endpoint alerts on.
+   */
+  async getFairnessMetrics(): Promise<FairnessMetrics> {
+    return {
+      waitByPriority: fairQueue.waitTimeByPriority(),
+      waitingByPriority: fairQueue.waitingCounts(),
+      starvation: fairQueue.starvationReport(),
     };
   }
 

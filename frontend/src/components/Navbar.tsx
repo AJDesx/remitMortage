@@ -7,6 +7,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useWallet } from "../context/WalletContext";
+import { useDemoMode } from "../context/DemoModeContext";
 import { useNotifications } from "@/context/NotificationContext";
 import { useKeyboardShortcuts } from "@/context/KeyboardShortcutsContext";
 import { describeNetworkMismatch } from "../lib/wallet-errors";
@@ -52,6 +53,7 @@ function InnerNavbar() {
     clearError,
     isConnecting,
   } = useWallet();
+  const { isDemoMode, exitDemoMode } = useDemoMode();
   const { unreadCount, togglePanel } = useNotifications();
   const { openCheatSheet } = useKeyboardShortcuts();
   const t = useTranslations("nav");
@@ -177,6 +179,8 @@ function InnerNavbar() {
                 isConnecting={isConnecting}
                 connect={connect}
                 disconnect={disconnect}
+                isDemoMode={isDemoMode}
+                onExitDemo={exitDemoMode}
               />
             </span>
           </div>
@@ -200,6 +204,8 @@ function InnerNavbar() {
               isConnecting={isConnecting}
               connect={connect}
               disconnect={disconnect}
+              isDemoMode={isDemoMode}
+              onExitDemo={exitDemoMode}
               compact
             />
           </div>
@@ -259,6 +265,8 @@ function InnerNavbar() {
             isConnecting={isConnecting}
             connect={connect}
             disconnect={disconnect}
+            isDemoMode={isDemoMode}
+            onExitDemo={exitDemoMode}
             fullWidth
           />
         </div>
@@ -356,6 +364,8 @@ interface WalletButtonProps {
   isConnecting: boolean;
   connect: () => Promise<string | null>;
   disconnect: () => void;
+  isDemoMode?: boolean;
+  onExitDemo?: () => void;
   compact?: boolean;
   fullWidth?: boolean;
 }
@@ -368,10 +378,29 @@ function WalletButton({
   isConnecting,
   connect,
   disconnect,
+  isDemoMode = false,
+  onExitDemo,
   compact = false,
   fullWidth = false,
 }: WalletButtonProps) {
   const t = useTranslations("nav");
+
+  // Demo mode never calls the real `connect()` — exiting is the only action
+  // available so sandbox exploration can't accidentally touch a real wallet.
+  if (isDemoMode && !isConnected) {
+    return (
+      <button
+        onClick={onExitDemo}
+        data-testid="exit-demo-button"
+        className={`inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 font-semibold hover:bg-cyan-500/20 transition-colors ${
+          compact ? "!py-2 !px-3 !text-xs" : "!py-2.5 !px-4 !text-xs md:!text-sm"
+        } ${fullWidth ? "!w-full justify-center" : ""}`}
+      >
+        Demo Mode · Exit
+      </button>
+    );
+  }
+
   if (!isConnected) {
     return (
       <button

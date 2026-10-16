@@ -31,6 +31,10 @@ jest.mock("../config.js", () => ({
 // the scope of the audit-log pagination work. This mock reproduces the
 // documented Bearer-key contract so these tests exercise the route itself.
 jest.mock("../middleware/auth.js", () => ({
+  // The audit router also mounts an auth-protected stream route; the mock must
+  // provide every export the router imports or `router.post` receives
+  // `undefined` and throws at import time.
+  authMiddleware: (_req: any, _res: any, next: any) => next(),
   requireAdmin: (req: any, res: any, next: any) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -73,12 +77,15 @@ describe("Audit Service", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(mockCreate).toHaveBeenCalledWith({
-      data: {
+      data: expect.objectContaining({
         action: "test_action",
         actorAddress: "GABC123",
         ipAddress: "127.0.0.1",
-        metadata: { key: "value" },
-      },
+        // Issue #861: the entry now carries tamper-evident chain fields and an
+        // explicit createdAt, so the original content is matched loosely.
+        metadata: expect.objectContaining({ key: "value" }),
+        createdAt: expect.any(Date),
+      }),
     });
     expect(consoleSpy).toHaveBeenCalledWith("Audit log persistence failed:", expect.any(Error));
 
