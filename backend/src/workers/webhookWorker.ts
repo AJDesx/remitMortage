@@ -9,6 +9,12 @@ import { decrypt } from "../utils/crypto.js";
 import { signPayload, shapeWebhookPayload } from "../services/webhook.js";
 import { prisma } from "../services/db.js";
 import logger from "../utils/logger.js";
+import {
+  ActiveJobTracker,
+  drainWorker,
+  loadShutdownTimeouts,
+  type WorkerDrainResult,
+} from "../services/gracefulShutdown.js";
 
 function buildConnection(): WorkerOptions["connection"] {
   const client = getClusterClient();
@@ -32,6 +38,8 @@ const MAX_BACKOFF_MS = 30_000;
 const BASE_BACKOFF_MS = 1_000;
 
 let worker: Worker<WebhookJobData> | null = null;
+// Jobs running right now, so a shutdown that outlasts its timeout can requeue them.
+const activeJobs = new ActiveJobTracker();
 
 /**
  * Updates a subscriber's consecutive-failure streak after a dispatch reaches
@@ -107,7 +115,7 @@ export async function startWebhookWorker(): Promise<void> {
 
   worker = new Worker<WebhookJobData>(
     "remitmortgage-webhooks",
-    async (job) => {
+    activeJobs.wrap(async (job) => {
       const { subscriptionId, url, encryptedSecret, topic, data, webhookSchemaVersion } = job.data;
       const attempt = job.attemptsMade;
 
@@ -217,7 +225,7 @@ export async function startWebhookWorker(): Promise<void> {
       }
 
       throw new Error(errorMsg);
-    },
+    }),
     {
       ...workerOptions,
       // Let BullMQ handle backoff via job options instead of custom delay
@@ -249,11 +257,19 @@ export async function startWebhookWorker(): Promise<void> {
   logger.info("[webhook-worker] started");
 }
 
-export async function stopWebhookWorker(): Promise<void> {
+/**
+ * Stops taking jobs and waits for running ones to finish; any still running at
+ * `timeoutMs` are requeued (see drainWorker).
+ */
+export async function stopWebhookWorker(
+  timeoutMs: number = loadShutdownTimeouts().jobTimeoutMs
+): Promise<WorkerDrainResult | void> {
   if (!worker) return;
-  await worker.close();
+  const closing = worker;
   worker = null;
-  logger.info("[webhook-worker] stopped");
+  const result = await drainWorker("webhooks", closing, timeoutMs, activeJobs);
+  logger.info("[webhook-worker] stopped", { forced: result.forced, requeued: result.requeued });
+  return result;
 }
 
 export function getWebhookWorker(): Worker<WebhookJobData> | null {

@@ -4,6 +4,7 @@
 import { Router } from "express";
 import { prisma } from "../services/db.js";
 import { loadConfig } from "../config.js";
+import { isShuttingDown } from "../services/gracefulShutdown.js";
 
 export const healthRouter = Router();
 
@@ -54,6 +55,16 @@ async function checkHorizonHealth(): Promise<{ status: string; latencyMs?: numbe
  *               $ref: '#/components/schemas/HealthResponse'
  */
 healthRouter.get("/", async (_req, res) => {
+  // A draining instance reports unhealthy at once so load balancers stop
+  // routing to it (issue #827).
+  if (isShuttingDown()) {
+    return res.status(503).json({
+      status: "shutting_down",
+      service: "remitmortgage-api",
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   const [database, horizon] = await Promise.all([
     checkDatabaseHealth(),
     checkHorizonHealth(),
@@ -72,4 +83,53 @@ healthRouter.get("/", async (_req, res) => {
   };
 
   res.status(allHealthy ? 200 : 503).json(response);
+});
+
+/**
+ * @openapi
+ * /api/health/live:
+ *   get:
+ *     summary: Liveness probe
+ *     description: >
+ *       Always 200 while the process is running, including while it drains for
+ *       shutdown, so an orchestrator does not kill an instance that is still
+ *       finishing in-flight work.
+ *     tags:
+ *       - Health
+ *     responses:
+ *       200:
+ *         description: The process is alive.
+ */
+healthRouter.get("/live", (_req, res) => {
+  res.status(200).json({ status: "alive", timestamp: new Date().toISOString() });
+});
+
+/**
+ * @openapi
+ * /api/health/ready:
+ *   get:
+ *     summary: Readiness probe
+ *     description: >
+ *       200 when the instance can take traffic. Fails with 503 immediately once
+ *       SIGTERM is received (before the database is consulted), and also when
+ *       the database is unreachable.
+ *     tags:
+ *       - Health
+ *     responses:
+ *       200:
+ *         description: Ready for traffic.
+ *       503:
+ *         description: Shutting down, or a dependency is unavailable.
+ */
+healthRouter.get("/ready", async (_req, res) => {
+  if (isShuttingDown()) {
+    return res.status(503).json({ status: "shutting_down", timestamp: new Date().toISOString() });
+  }
+  const database = await checkDatabaseHealth();
+  const ready = database.status === "healthy";
+  res.status(ready ? 200 : 503).json({
+    status: ready ? "ready" : "not_ready",
+    components: { database },
+    timestamp: new Date().toISOString(),
+  });
 });

@@ -1242,3 +1242,44 @@ model LateFeeWaiverRequest {
   @@index([status, createdAt])
   @@index([borrowerAddress])
 }
+
+/// Lifecycle of an admin-managed notification template version (issue #825).
+/// At most one version per (key, locale) is Published at any time (enforced by
+/// a partial unique index); Superseded versions were live once and can be
+/// restored by a rollback.
+enum NotificationTemplateStatus {
+  Draft
+  Published
+  Superseded
+}
+
+/// A version of a notification template for one locale. Content is immutable
+/// once published; changing wording means a new version, and going back means
+/// re-publishing an earlier one (rollback), so the full history is retained.
+/// Sends resolve the Published version at dispatch time, so publishing affects
+/// only sends that happen afterwards. Who created / published each version is
+/// stored here; every change is also written to the audit log.
+model NotificationTemplateVersion {
+  id          String                     @id @default(uuid())
+  /// Template identifier from the code registry, e.g. "deposit_receipt".
+  key         String
+  /// Supported locale code: en | es | fr.
+  locale      String
+  /// Monotonic per (key, locale), starting at 1.
+  version     Int
+  status      NotificationTemplateStatus @default(Draft)
+  subject     String
+  /// Message body (HTML) with `{{variable}}` placeholders.
+  body        String
+  changeNote  String?
+  createdBy   String
+  createdAt   DateTime                   @default(now())
+  updatedBy   String?
+  updatedAt   DateTime                   @updatedAt
+  /// Set each time this version goes live (publish or rollback).
+  publishedBy String?
+  publishedAt DateTime?
+
+  @@unique([key, locale, version])
+  @@index([key, locale, status])
+}

@@ -56,9 +56,12 @@ import {
   feeWaiverBorrowerRouter,
 } from "./routes/feeWaiver.js";
 import { rateSheetAdminRouter } from "./routes/rateSheet.js";
+import { notificationTemplatesAdminRouter } from "./routes/notificationTemplates.js";
+import { adminSearchRouter } from "./routes/adminSearch.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { logMasker } from "./middleware/logMasker.js";
+import { payloadLimits } from "./middleware/payloadLimits.js";
 import { correlationId } from "./middleware/correlationId.js";
 import { tenantContext } from "./services/tenant.js";
 import { httpMetricsMiddleware } from "./middleware/metricsMiddleware.js";
@@ -68,6 +71,18 @@ import { readYourWritesMiddleware } from "./middleware/readYourWrites.js";
 import { credentialStuffingGuard } from "./middleware/credentialStuffing.js";
 import { rlsMiddleware } from "./middleware/rls.js";
 import { startEventIndexer } from "./services/eventIndexer.js";
+import {
+  gracefulShutdown,
+  inFlightRequestTracker,
+  loadShutdownTimeouts,
+} from "./services/gracefulShutdown.js";
+import { stopNotificationScheduler } from "./services/notification.js";
+import { stopScheduler } from "./jobs/scheduler.js";
+import { stopWebhookKeyRotationScheduler } from "./jobs/webhookKeyRotation.js";
+import { stopSecretsRotationScheduler } from "./jobs/secretsRotation.js";
+import { stopJwtKeyRotationScheduler } from "./jobs/jwtKeyRotation.js";
+import { disconnect as disconnectDatabase } from "./services/db.js";
+import { closeRedis } from "./services/redis.js";
 import {
   globalRateLimiter,
   sensitiveRateLimiter,
@@ -203,6 +218,9 @@ void (async () => {
 // ── Middleware ───────────────────────────────────────────────────────────
 // Correlation ID must be first so every downstream middleware, handler and
 // log line for this request resolves the same trace ID.
+// In-flight request tracking comes before everything so draining counts (and,
+// once shutting down, turns away) every request (issue #827).
+app.use(inFlightRequestTracker());
 app.use(correlationId);
 app.use(tenantContext);
 // HTTP metrics must be first so the timer starts at the earliest possible point.
@@ -225,7 +243,8 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json());
+// Per-route body size / JSON depth / array length limits (issue #828).
+app.use(payloadLimits());
 app.use(logMasker);
 app.use(cookieParser());
 
@@ -288,6 +307,8 @@ app.use("/api/tenant", tenantRouter);
 app.use("/api/admin", authMiddleware, readYourWritesMiddleware, adminRouter);
 app.use("/api/admin", authMiddleware, readYourWritesMiddleware, feeWaiverAdminRouter);
 app.use("/api/admin", authMiddleware, readYourWritesMiddleware, rateSheetAdminRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, notificationTemplatesAdminRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, adminSearchRouter);
 app.use("/api/admin", adminAuthRouter);
 // Bare (no outer authMiddleware): impersonation/start and /end authenticate
 // via the admin's own token through requireAdmin regardless of whether an
@@ -316,8 +337,10 @@ app.use(notFoundHandler);
 Sentry.setupExpressErrorHandler(app);
 app.use(errorHandler);
 
+let eventIndexer: ReturnType<typeof startEventIndexer> | undefined;
+
 // ── Start Server ────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info("RemitMortgage API server started", {
     port: PORT,
     environment: process.env.NODE_ENV || "development",
@@ -328,7 +351,7 @@ app.listen(PORT, () => {
 
   // Start the Soroban contract event indexer alongside the HTTP server. It
   // polls /getEvents and persists borrower activity into PostgreSQL.
-  startEventIndexer();
+  eventIndexer = startEventIndexer();
   startNotificationScheduler();
   startScheduler();
   startBackupScheduler();
@@ -344,23 +367,55 @@ app.listen(PORT, () => {
   feeEstimator.start();
 });
 
-// ── Graceful Shutdown ─────────────────────────────────────────────────
+// ── Graceful Shutdown (issue #827) ──────────────────────────────────────
+// SIGTERM (rolling deploy / scale-down): fail readiness at once, stop accepting
+// connections, let in-flight requests and running jobs finish within their
+// timeouts, then close queues, Redis and the database. See
+// services/gracefulShutdown.ts.
+const shutdownTimeouts = loadShutdownTimeouts();
+
 async function shutdown(signal: string) {
-  logger.info(`[shutdown] received ${signal}, shutting down gracefully`);
-  stopIpfsOrphanCleanupScheduler();
-  await Promise.allSettled([
-    stopNotificationWorker(),
-    stopWebhookWorker(),
-    stopAnalyticsWorker(),
-    queueService.close(),
-    closeCluster(),
-  ]);
-  stopWebhookAutoDisableScheduler();
-  logger.info("[shutdown] complete");
-  process.exit(0);
+  // Last resort: if something wedges, still exit before the orchestrator's
+  // SIGKILL so the exit code reflects a failed shutdown.
+  const watchdog = setTimeout(() => {
+    logger.error("[shutdown] watchdog expired, forcing exit");
+    process.exit(1);
+  }, Math.max(shutdownTimeouts.requestTimeoutMs, shutdownTimeouts.jobTimeoutMs) + 5_000);
+  watchdog.unref();
+
+  const result = await gracefulShutdown(signal, {
+    server,
+    ...shutdownTimeouts,
+    stopSchedulers: [
+      stopScheduler,
+      stopNotificationScheduler,
+      stopIpfsOrphanCleanupScheduler,
+      stopWebhookAutoDisableScheduler,
+      stopWebhookKeyRotationScheduler,
+      stopSecretsRotationScheduler,
+      stopJwtKeyRotationScheduler,
+      () => eventIndexer?.stop(),
+      () => feeEstimator.stop(),
+    ],
+    drainWorkers: [
+      (timeout) => stopNotificationWorker(timeout),
+      (timeout) => stopWebhookWorker(timeout),
+      (timeout) => stopAnalyticsWorker(timeout),
+    ],
+    // Order matters: queues and Redis go before the database, and Sentry last
+    // so shutdown errors are still reported.
+    closeResources: [
+      { name: "queues", close: () => queueService.close() },
+      { name: "redis-cluster", close: () => closeCluster() },
+      { name: "redis", close: () => closeRedis() },
+      { name: "database", close: () => disconnectDatabase() },
+      { name: "sentry", close: () => Sentry.close(2_000) },
+    ],
+  });
+  process.exit(result.errors.length > 0 ? 1 : 0);
 }
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
 
 export default app;
