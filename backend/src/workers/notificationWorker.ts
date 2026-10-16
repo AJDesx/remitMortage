@@ -5,11 +5,18 @@ import { Worker, WorkerOptions } from "bullmq";
 import { Queue } from "bullmq";
 import { getClusterClient } from "../services/redisCluster.js";
 import { NotificationJobData } from "../services/queueService.js";
-import { sendEmail, sendDepositReceipt, sendRepaymentReminder, sendLoanStatusUpdate } from "../services/email.js";
+import { sendEmail, sendDepositReceipt, sendRepaymentReminder, sendLoanStatusUpdate, getBrandedHtml } from "../services/email.js";
+import { getTemplateDefinition, renderPublishedTemplate } from "../services/notificationTemplates.js";
 import { sendWebhook } from "../services/webhook.js";
 import { prisma } from "../services/db.js";
 import logger from "../utils/logger.js";
 import { runWithTenant } from "../services/tenant.js";
+import {
+  ActiveJobTracker,
+  drainWorker,
+  loadShutdownTimeouts,
+  type WorkerDrainResult,
+} from "../services/gracefulShutdown.js";
 
 function buildConnection(): WorkerOptions["connection"] {
   const client = getClusterClient();
@@ -28,12 +35,30 @@ const workerOptions: WorkerOptions = {
 };
 
 let worker: Worker<NotificationJobData> | null = null;
+// Jobs running right now, so a shutdown that outlasts its timeout can requeue them.
+const activeJobs = new ActiveJobTracker();
+
+/** Renders the live admin-managed version of the queued template, if there is one. */
+async function renderManagedEmail(parsed: Record<string, unknown>, locale: string | undefined) {
+  const def = typeof parsed.template === "string" ? getTemplateDefinition(parsed.template) : undefined;
+  if (!def) return null;
+  // The sender's payload carries each variable under its own name.
+  const vars = Object.fromEntries(def.variables.map((name) => [name, parsed[name]]));
+  return renderPublishedTemplate(def.key, locale, vars);
+}
 
 async function handleEmailDispatch(recipient: string, content: string): Promise<boolean> {
   if (content.trim().startsWith("{")) {
     try {
       const parsed = JSON.parse(content);
       const locale: string | undefined = parsed.locale;
+      // An admin-published template (issue #825), resolved now so a publish
+      // only affects sends dispatched after it. Falls through to the built-in
+      // templates when none is published for this locale.
+      const managed = await renderManagedEmail(parsed, locale);
+      if (managed) {
+        return await sendEmail(recipient, managed.subject, getBrandedHtml(managed.subject, managed.body));
+      }
       if (parsed.template === "deposit_receipt") {
         return await sendDepositReceipt(recipient, parsed.amount, parsed.transactionId, locale);
       }
@@ -66,7 +91,7 @@ export async function startNotificationWorker(): Promise<void> {
 
   worker = new Worker<NotificationJobData>(
     "remitmortgage-notifications",
-    (job) => runWithTenant(job.data.tenantId, async () => {
+    activeJobs.wrap((job) => runWithTenant(job.data.tenantId, async () => {
       const { notificationId, recipient, type, content } = job.data;
 
       logger.info("[notification-worker] processing notification", {
@@ -129,7 +154,7 @@ export async function startNotificationWorker(): Promise<void> {
 
         throw err;
       }
-    }),
+    })),
     workerOptions
   );
 
@@ -158,11 +183,19 @@ export async function startNotificationWorker(): Promise<void> {
   logger.info("[notification-worker] started");
 }
 
-export async function stopNotificationWorker(): Promise<void> {
+/**
+ * Stops taking jobs and waits for running ones to finish; any still running at
+ * `timeoutMs` are requeued (see drainWorker).
+ */
+export async function stopNotificationWorker(
+  timeoutMs: number = loadShutdownTimeouts().jobTimeoutMs
+): Promise<WorkerDrainResult | void> {
   if (!worker) return;
-  await worker.close();
+  const closing = worker;
   worker = null;
-  logger.info("[notification-worker] stopped");
+  const result = await drainWorker("notifications", closing, timeoutMs, activeJobs);
+  logger.info("[notification-worker] stopped", { forced: result.forced, requeued: result.requeued });
+  return result;
 }
 
 export function getNotificationWorker(): Worker<NotificationJobData> | null {

@@ -63,3 +63,44 @@ NEXT_PUBLIC_ANALYTICS_ENABLED=false
 Authenticated events are buffered through the existing Redis/BullMQ analytics
 queue and persisted in PostgreSQL in batches. Run the backend worker with the
 same Redis configuration as the API process so queued events are drained.
+
+## Request Payload Limits
+
+Every request is checked by `backend/src/middleware/payloadLimits.ts` before the
+body is parsed: `Content-Length` first, then the streamed size, then the JSON
+nesting depth and array length. Violations return `413` with a machine-readable
+`error` (`payload_too_large`, `json_too_deep`, `json_array_too_long`) and
+increment `remitmortgage_payload_rejected_total{reason,route}`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PAYLOAD_MAX_BYTES` | `102400` | Default maximum body size (bytes) |
+| `PAYLOAD_MAX_JSON_DEPTH` | `20` | Default maximum JSON nesting depth |
+| `PAYLOAD_MAX_ARRAY_LENGTH` | `1000` | Default maximum elements in any one array |
+
+Larger limits are explicit, per route, in `DEFAULT_ROUTE_LIMITS`
+(`/api/kyc`, `/api/loan/import` and the email-events webhook). Add an entry
+there rather than raising the global defaults.
+
+## Graceful Shutdown
+
+On `SIGTERM`/`SIGINT` the API fails `/api/health` and `/api/health/ready`
+immediately, stops accepting connections, lets in-flight requests finish, drains
+queue workers (jobs still running at the timeout are requeued), then closes
+queues, Redis and the database. `/api/health/live` keeps returning `200`
+throughout, so point liveness probes there and readiness probes at
+`/api/health/ready`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SHUTDOWN_REQUEST_TIMEOUT_MS` | `15000` | How long in-flight requests may run before connections are closed |
+| `SHUTDOWN_JOB_TIMEOUT_MS` | `15000` | How long running jobs may run before they are requeued |
+
+Keep the larger of the two (plus ~5s) below the orchestrator's
+`terminationGracePeriodSeconds`.
+
+## Admin Search
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ADMIN_SEARCH_API_KEY_ENTITIES` | `loans,applicants` | Record types the static admin API key may search (`loans`, `applicants`, `documents`). Admin wallet sessions can search all three. |

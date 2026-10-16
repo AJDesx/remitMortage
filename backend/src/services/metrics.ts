@@ -237,6 +237,40 @@ export const apiKeyQuotaExceededTotal = new Counter({
 });
 
 // ---------------------------------------------------------------------------
+// Request payload limit metrics
+// ---------------------------------------------------------------------------
+
+/**
+ * Total requests rejected by the payload size/shape limits, by reason
+ * (`too_large` | `too_deep` | `array_too_long`) and the matched route rule
+ * (a configured path prefix, or `default`). See middleware/payloadLimits.ts.
+ */
+export const payloadRejectedTotal = new Counter({
+  name: "remitmortgage_payload_rejected_total",
+  help: "Total requests rejected with 413 for exceeding body size, JSON depth or array length limits.",
+  labelNames: ["reason", "route"] as const,
+  registers: [metricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown metrics
+// ---------------------------------------------------------------------------
+
+/** HTTP requests currently being served; drained to 0 during shutdown. */
+export const httpInFlightRequests = new Gauge({
+  name: "remitmortgage_http_in_flight_requests",
+  help: "Number of HTTP requests currently in flight.",
+  registers: [metricsRegistry],
+});
+
+/** 1 once the process has begun graceful shutdown (readiness is failing). */
+export const shuttingDown = new Gauge({
+  name: "remitmortgage_shutting_down",
+  help: "1 when the process is draining for shutdown, 0 otherwise.",
+  registers: [metricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
 // Convenience helpers
 // ---------------------------------------------------------------------------
 
