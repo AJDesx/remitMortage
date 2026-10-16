@@ -29,11 +29,15 @@ mod test_auto_deposit;
 #[cfg(test)]
 mod test_goal_consolidation;
 
+#[cfg(test)]
+mod test_attestor_change_timelock;
+
 pub use crate::errors::EscrowError;
 use crate::token_utils::get_token_client;
 use crate::types::DataKey;
 pub use crate::types::{
-    AutoDepositSchedule, BorrowerRecord, EscrowConfig, PendingPenaltyProposal, PendingUpgradeRecord,
+    AutoDepositSchedule, BorrowerRecord, EscrowConfig, PendingAttestorChangeProposal,
+    PendingPenaltyProposal, PendingUpgradeRecord,
 };
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, IntoVal, Symbol};
 
@@ -160,6 +164,10 @@ impl EscrowContract {
             }
         }
         Ok(())
+    }
+
+    fn get_pending_attestor_change(env: &Env) -> Option<PendingAttestorChangeProposal> {
+        env.storage().instance().get(&DataKey::PendingAttestorChange)
     }
 
     fn attestors(env: &Env) -> Result<crate::types::BeneficiaryAttestorConfig, EscrowError> {
@@ -1010,6 +1018,13 @@ impl EscrowContract {
     /// Configure the admin-approved death/incapacity attestors and quorum.
     /// Each attestor must later authorize the claim invocation itself, which
     /// makes the authorization specific to this owner, goal, and beneficiary.
+    ///
+    /// When `AttestorChangeDelay` is `0` (the deployment default) the change
+    /// applies immediately, exactly as before. Once an admin has configured
+    /// a non-zero delay via `set_attestor_change_delay`, this call instead
+    /// records the change as pending and `apply_attestor_change` must be
+    /// called after the delay elapses to activate it — so a compromised
+    /// admin key can no longer swap out the quorum in a single transaction.
     pub fn configure_beneficiary_attestors(
         env: Env,
         signers: soroban_sdk::Vec<Address>,
@@ -1018,12 +1033,122 @@ impl EscrowContract {
         let config = Self::get_config(&env)?;
         config.admin.require_auth();
         Self::validate_attestors(&signers, threshold)?;
-        env.storage().instance().set(
-            &DataKey::BeneficiaryAttestors,
-            &crate::types::BeneficiaryAttestorConfig { signers, threshold },
-        );
+
+        let delay: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AttestorChangeDelay)
+            .unwrap_or(0u32);
+
+        if delay == 0 {
+            env.storage().instance().set(
+                &DataKey::BeneficiaryAttestors,
+                &crate::types::BeneficiaryAttestorConfig { signers, threshold },
+            );
+            // Clear any stale pending proposal left over from when a delay
+            // was configured, so it can never later be applied against a
+            // live config it no longer matches.
+            env.storage()
+                .instance()
+                .remove(&DataKey::PendingAttestorChange);
+            Self::extend_instance_ttl(&env);
+            return Ok(());
+        }
+
+        let execute_after = env.ledger().sequence() + delay;
+        let proposal = PendingAttestorChangeProposal {
+            signers,
+            threshold,
+            execute_after,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAttestorChange, &proposal);
+
+        env.events()
+            .publish((symbol_short!("attchg_p"),), (threshold, execute_after));
+
         Self::extend_instance_ttl(&env);
         Ok(())
+    }
+
+    /// Activate a pending beneficiary-attestor change once its timelock has
+    /// elapsed. Reverts with `UpgradeTimelockActive` if called early.
+    pub fn apply_attestor_change(env: Env) -> Result<(), EscrowError> {
+        let config = Self::get_config(&env)?;
+        config.admin.require_auth();
+
+        let pending = Self::get_pending_attestor_change(&env)
+            .ok_or(EscrowError::AttestorChangeProposalNotPending)?;
+
+        if env.ledger().sequence() < pending.execute_after {
+            return Err(EscrowError::UpgradeTimelockActive);
+        }
+
+        env.storage().instance().set(
+            &DataKey::BeneficiaryAttestors,
+            &crate::types::BeneficiaryAttestorConfig {
+                signers: pending.signers,
+                threshold: pending.threshold,
+            },
+        );
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAttestorChange);
+
+        env.events()
+            .publish((symbol_short!("attchg_a"),), (pending.threshold,));
+
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Cancel a pending beneficiary-attestor change before it activates.
+    /// Callable by the admin — the same authority required to propose a
+    /// change — so a response to a suspected key compromise can abort a
+    /// malicious pending change during the timelock window.
+    pub fn cancel_attestor_change(env: Env) -> Result<(), EscrowError> {
+        let config = Self::get_config(&env)?;
+        config.admin.require_auth();
+
+        if Self::get_pending_attestor_change(&env).is_none() {
+            return Err(EscrowError::AttestorChangeProposalNotPending);
+        }
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAttestorChange);
+
+        env.events().publish((symbol_short!("attchg_c"),), ());
+
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Admin-only: sets the number of ledgers that must elapse between
+    /// proposing and applying a beneficiary-attestor change. `0` disables
+    /// the timelock, so `configure_beneficiary_attestors` applies changes
+    /// immediately — the deployment default.
+    pub fn set_attestor_change_delay(env: Env, delay_ledgers: u32) -> Result<(), EscrowError> {
+        let config = Self::get_config(&env)?;
+        config.admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::AttestorChangeDelay, &delay_ledgers);
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// View function returning the configured attestor-change timelock delay.
+    pub fn get_attestor_change_delay(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::AttestorChangeDelay)
+            .unwrap_or(0u32)
+    }
+
+    /// View function returning the pending beneficiary-attestor change, if any.
+    pub fn get_attestor_change_proposal(env: Env) -> Option<PendingAttestorChangeProposal> {
+        Self::get_pending_attestor_change(&env)
     }
 
     /// Transfer the funded owner/goal escrow to its currently designated

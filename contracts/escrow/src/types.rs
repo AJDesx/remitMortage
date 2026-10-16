@@ -123,6 +123,16 @@ pub struct PendingPenaltyProposal {
     pub execute_after: u32,
 }
 
+/// Pending beneficiary-attestor signer/threshold change, awaiting its
+/// timelock before `apply_attestor_change` may activate it.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingAttestorChangeProposal {
+    pub signers: Vec<Address>,
+    pub threshold: u32,
+    pub execute_after: u32,
+}
+
 /// Storage keys for the escrow contract.
 #[contracttype]
 #[derive(Clone)]
@@ -172,4 +182,11 @@ pub enum DataKey {
     Whitelist(Address),
     /// Recurring auto-deposit schedule for a borrower's goal.
     AutoDeposit(Address, Symbol),
+    /// Pending beneficiary-attestor signer/threshold change (present only
+    /// while a change is awaiting its timelock).
+    PendingAttestorChange,
+    /// Ledgers the admin must wait between proposing and applying a
+    /// beneficiary-attestor signer/threshold change. `0` — the deployment
+    /// default — applies changes immediately, preserving existing behavior.
+    AttestorChangeDelay,
 }

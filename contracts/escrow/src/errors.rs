@@ -83,4 +83,6 @@ pub enum EscrowError {
     InvalidInactivityPeriod = 32,
     /// Attestor configuration must have a non-empty signer set and a valid threshold.
     InvalidAttestorConfig = 33,
+    /// No pending attestor-threshold change exists to apply or cancel.
+    AttestorChangeProposalNotPending = 39,
 }
