@@ -36,6 +36,16 @@ route:
       repeat_interval: 15m
       continue: true
 
+    # SLO slow burns → lower-severity ticket (see slo-burn-rate-alerts.yml).
+    # Fast burns use severity "page" and are routed to PagerDuty above.
+    - match:
+        severity: ticket
+      receiver: ticket-queue
+      group_by: ["alertname", "slo"]
+      group_wait: 5m
+      group_interval: 1h
+      repeat_interval: 24h
+
     # Warning alerts → Slack ops channel
     - match:
         severity: warning
@@ -55,6 +65,23 @@ receivers:
           endpoint: "{{ .CommonAnnotations.endpoint }}"
           instance: "{{ .CommonAnnotations.instance }}"
           runbook_url: "{{ .CommonAnnotations.runbook_url }}"
+
+  # Opens a ticket (via the tracker's inbound webhook) and mirrors it to Slack.
+  - name: ticket-queue
+    webhook_configs:
+      - url: "${TICKET_WEBHOOK_URL}"
+        send_resolved: true
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#ops-alerts"
+        send_resolved: false
+        title: "[TICKET] {{ .GroupLabels.alertname }}"
+        text: >-
+          *{{ .CommonAnnotations.summary }}*
+
+          {{ .CommonAnnotations.description }}
+
+          Runbook: {{ .CommonAnnotations.runbook_url | default "N/A" }}
 
   - name: slack-ops
     slack_configs:
@@ -80,6 +107,13 @@ inhibit_rules:
     target_match_re:
       alertname: Synthetic(Health|Auth|Loan)EndpointDown
     equal: ["instance", "endpoint"]
+
+  # A paging burn on an SLO suppresses the ticket-level burn for the same SLO
+  - source_match:
+      severity: page
+    target_match:
+      severity: ticket
+    equal: ["slo"]
 
   # Critical alerts suppress warnings for the same endpoint
   - source_match:
