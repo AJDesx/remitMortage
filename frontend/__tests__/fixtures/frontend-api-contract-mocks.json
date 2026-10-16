@@ -3,20 +3,20 @@
     "200": { "totalLoans": 12, "totalBorrowed": 950000, "averageInterestRate": 8.5 }
   },
   "POST /api/verification/check": {
-    "200": { "success": true, "score": 720 },
+    "200": { "senderAddress": "GTEST", "recipientAddress": "GTEST2", "totalPayments": 1, "eligible": true, "reportId": "test-report", "reportHash": "test-hash" },
     "400": { "error": "invalid_request" }
   },
   "POST /api/verification/challenge": {
-    "200": { "challenge": "test-challenge", "expiresAt": "2030-01-01T00:00:00.000Z" },
+    "200": { "challenge": "test-challenge" },
     "400": { "error": "invalid_address" }
   },
   "POST /api/kyc/{address}/upload": {
-    "201": { "documentId": "test-document", "scanStatus": "clean" },
+    "201": { "documentId": "test-document", "uploadedAt": "2030-01-01T00:00:00.000Z", "scanStatus": "clean", "ocr": { "ocrFailed": false } },
     "400": { "error": "missing_file" },
     "403": { "error": "forbidden" }
   },
   "POST /api/admin/loans/bulk-review": {
-    "200": { "approved": 1, "rejected": 0 },
+    "200": { "processed": 1, "failed": 0, "results": [], "failures": [] },
     "400": { "error": "invalid_request" }
   }
 }
