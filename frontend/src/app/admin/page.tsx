@@ -18,6 +18,15 @@ import ActiveLoansMapView from "../../components/ActiveLoansMapView";
 import AuditLogViewer from "../../components/AuditLogViewer";
 import ApplicantCommunicationTimeline from "../../components/ApplicantCommunicationTimeline";
 import LoanCommentsPanel from "../../components/LoanCommentsPanel";
+import {
+  LoadingRegion,
+  SkeletonStatGrid,
+  SkeletonTable,
+} from "../../components/skeleton/Skeleton";
+import { SKELETON_LAYOUT } from "../../lib/skeleton-layout";
+
+/** Rows shown in the admin tab skeletons while a queue (re)loads. */
+const ADMIN_SKELETON_ROWS = 5;
 import { LoanKanbanBoard, KanbanLoan } from "../../components/LoanKanbanBoard";
 import LoanQueueTable from "../../components/admin/LoanQueueTable";
 
@@ -481,18 +490,30 @@ function PoolOverviewCard({
     { label: "Total Repaid", value: overview ? formatUsdc(overview.totalRepaid) : "—" },
   ];
   return (
-    <section aria-label="Pool overview" className="grid grid-cols-2 md:grid-cols-4 gap-4">
-      {cards.map((card) => (
-        <div
-          key={card.label}
-          className={`p-5 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)] ${
-            loading ? "animate-pulse" : ""
-          }`}
-        >
-          <p className="text-xs text-[var(--text-muted)] mb-1">{card.label}</p>
-          <p className="text-2xl font-bold">{card.value}</p>
-        </div>
-      ))}
+    <section
+      aria-label="Pool overview"
+      aria-busy={loading}
+      className="grid grid-cols-2 md:grid-cols-4 gap-4"
+    >
+      {loading && (
+        <span role="status" className="sr-only">
+          Loading pool overview
+        </span>
+      )}
+      {loading ? (
+        <SkeletonStatGrid className="contents" />
+      ) : (
+        cards.map((card) => (
+          <div
+            key={card.label}
+            className="p-5 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]"
+            style={{ minHeight: SKELETON_LAYOUT.statCard }}
+          >
+            <p className="text-xs text-[var(--text-muted)] mb-1">{card.label}</p>
+            <p className="text-2xl font-bold">{card.value}</p>
+          </div>
+        ))
+      )}
     </section>
   );
 }
@@ -529,7 +550,15 @@ function PendingLoansTab({
   const [reassignModalOpen, setReassignModalOpen] = useState(false);
   const [assigneeAddress, setAssigneeAddress] = useState("");
 
-  if (loading) return <EmptyRow text="Loading pending loans…" />;
+  if (loading) {
+    return (
+      <LoadingRegion
+        loading
+        label="Loading pending loans"
+        skeleton={<SkeletonTable rows={ADMIN_SKELETON_ROWS} />}
+      />
+    );
+  }
   if (loans.length === 0) {
     return (
       <EmptyState
@@ -929,7 +958,15 @@ function MilestoneReviewsTab({
   isReadOnly: boolean;
   onApprove: (milestone: MilestoneReview) => void;
 }) {
-  if (loading) return <EmptyRow text="Loading milestone reviews…" />;
+  if (loading) {
+    return (
+      <LoadingRegion
+        loading
+        label="Loading milestone reviews"
+        skeleton={<SkeletonTable rows={ADMIN_SKELETON_ROWS} />}
+      />
+    );
+  }
   if (milestones.length === 0) {
     return (
       <EmptyState
@@ -947,6 +984,7 @@ function MilestoneReviewsTab({
         <div
           key={milestone.id}
           className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]"
+          style={{ minHeight: SKELETON_LAYOUT.tableRow }}
         >
           <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
             <div>
@@ -981,14 +1019,6 @@ function MilestoneReviewsTab({
           </div>
         </div>
       ))}
-    </div>
-  );
-}
-
-function EmptyRow({ text }: { text: string }) {
-  return (
-    <div className="p-8 text-center text-sm text-[var(--text-muted)] bg-[var(--bg-card)] rounded-lg border border-[var(--border-color)]">
-      {text}
     </div>
   );
 }
