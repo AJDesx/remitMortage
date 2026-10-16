@@ -1,7 +1,7 @@
 // Copyright (c) 2026 RemitMortgage Protocol Contributors
 // SPDX-License-Identifier: MIT
 
-use soroban_sdk::{contracttype, Address, BytesN, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Symbol, Vec};
 
 /// A single weighted signer of a multisig account, mirroring a Stellar
 /// account's `signer { key, weight }` entry. `key` is the Ed25519 public key.
@@ -45,6 +45,24 @@ pub enum ProposalState {
     Executed,
 }
 
+/// A single action within an atomic multi-action proposal.
+///
+/// The validator itself does not interpret or execute an action's real-world
+/// effect — exactly as it never has for the single-action case — but it does
+/// now carry the ordered list so that callers checking `get_proposal()` see
+/// one `Executed` transition for the whole bundle rather than needing to
+/// correlate N separate proposals (which could otherwise land in an
+/// inconsistent state between each one's own approval/execution).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Action {
+    /// Identifier for this action (e.g. a hash of its off-chain details).
+    /// Must be unique within its proposal's action list.
+    pub action_id: BytesN<32>,
+    /// Short label describing the action kind, included in its execution event.
+    pub label: Symbol,
+}
+
 /// A timelocked action proposal.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +79,11 @@ pub struct Proposal {
     /// Set at submission time.  A value of 0 means no expiry (legacy records
     /// created before this field existed are treated as non-expiring).
     pub expiration_ledger: u32,
+    /// Ordered list of actions this proposal executes atomically. Capped at
+    /// `MAX_ACTIONS_PER_PROPOSAL`. A single-action proposal submitted via
+    /// `submit_action` carries an empty list here — it behaves exactly as it
+    /// always has, flipping to `Executed` with no actions to iterate.
+    pub actions: Vec<Action>,
 }
 
 /// Admin-managed multisig configuration: the required signature threshold and

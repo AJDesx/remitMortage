@@ -6,9 +6,10 @@ import { promisify } from "util";
 import { createReadStream, unlinkSync } from "fs";
 import { S3Client, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand, CopyObjectCommand } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
-import { createCipheriv, randomBytes, createHash } from "crypto";
+import { createCipheriv, createDecipheriv, randomBytes, createHash } from "crypto";
 import { loadConfig } from "../config.js";
 import logger from "../utils/logger.js";
+import { recordApiCapabilityUsage } from "./apiScopeUsageTracker.js";
 
 const execPromise = promisify(exec);
 
@@ -30,6 +31,11 @@ export class DatabaseBackupService {
   private s3Client?: S3Client;
   private gcsStorage?: Storage;
   private options: BackupOptions;
+
+  /** Integration id used by the API key scope audit (issue #772). */
+  private scopeIntegration(): string {
+    return this.options.provider === "aws" ? "aws_s3_backup" : "gcs_backup";
+  }
 
   constructor(options: BackupOptions) {
     this.options = options;
@@ -179,6 +185,15 @@ export class DatabaseBackupService {
     const fileStream = createReadStream(filePath);
     const stats = require("fs").statSync(filePath);
 
+    // Stamped on every backup so the key rotation verification job
+    // (scripts/verify-backup-key-rotation.sh) can tell which encryption key
+    // produced it and how long that key has been in service, without needing
+    // to decrypt anything. See docs/SECRETS_ROTATION.md, "Backup encryption key".
+    const encryptionMetadata = {
+      encryptionKeyId: process.env.BACKUP_ENCRYPTION_KEY_ID || "unknown",
+      encryptionKeyRotatedAt: process.env.BACKUP_ENCRYPTION_KEY_ROTATED_AT || "",
+    };
+
     if (this.options.provider === "aws" && this.s3Client) {
       const command = new PutObjectCommand({
         Bucket: this.options.bucket,
@@ -188,11 +203,13 @@ export class DatabaseBackupService {
         Metadata: {
           timestamp: new Date().toISOString(),
           service: "remitmortgage-backend",
+          ...encryptionMetadata,
         },
       });
 
       await this.s3Client.send(command);
 
+      void recordApiCapabilityUsage(this.scopeIntegration(), "put_object").catch(() => {});
       return { size: stats.size };
     } else if (this.options.provider === "gcs" && this.gcsStorage) {
       const bucket = this.gcsStorage.bucket(this.options.bucket);
@@ -207,6 +224,7 @@ export class DatabaseBackupService {
                 metadata: {
                   timestamp: new Date().toISOString(),
                   service: "remitmortgage-backend",
+                  ...encryptionMetadata,
                 },
               },
             })
@@ -215,6 +233,7 @@ export class DatabaseBackupService {
           .on("error", reject);
       });
 
+      void recordApiCapabilityUsage(this.scopeIntegration(), "put_object").catch(() => {});
       return { size: stats.size };
     }
 
@@ -261,6 +280,22 @@ export class DatabaseBackupService {
     return { archived, failed };
   }
 
+  /**
+   * Returns the most recently created backup's object key (by the timestamp
+   * embedded in its filename, not upload time), or null if no backup has
+   * ever been uploaded. Used by the restore drill to always exercise the
+   * backup that would actually be used in a real recovery, rather than a
+   * fixed or hand-picked one.
+   */
+  async getLatestBackupKey(): Promise<string | null> {
+    const keys = await this.listBackupKeys();
+    if (keys.length === 0) return null;
+
+    // Filenames are `backups/remitmortgage-backup-<ISO-with-dashes>.sql.enc`,
+    // so lexicographic order is chronological order.
+    return keys.slice().sort().at(-1) ?? null;
+  }
+
   private async listBackupKeys(): Promise<string[]> {
     const prefix = "backups/";
 
@@ -270,12 +305,14 @@ export class DatabaseBackupService {
         Prefix: prefix,
       });
       const response = await this.s3Client.send(command);
+      void recordApiCapabilityUsage(this.scopeIntegration(), "list_objects").catch(() => {});
       return (response.Contents ?? []).map((o) => o.Key!).filter(Boolean);
     }
 
     if (this.options.provider === "gcs" && this.gcsStorage) {
       const bucket = this.gcsStorage.bucket(this.options.bucket);
       const [files] = await bucket.getFiles({ prefix });
+      void recordApiCapabilityUsage(this.scopeIntegration(), "list_objects").catch(() => {});
       return files.map((f) => f.name);
     }
 
@@ -298,19 +335,23 @@ export class DatabaseBackupService {
         StorageClass: "GLACIER",
       });
       await this.s3Client.send(copyCommand);
+      void recordApiCapabilityUsage(this.scopeIntegration(), "copy_object").catch(() => {});
 
       const deleteCommand = new DeleteObjectCommand({
         Bucket: this.options.bucket,
         Key: key,
       });
       await this.s3Client.send(deleteCommand);
+      void recordApiCapabilityUsage(this.scopeIntegration(), "delete_object").catch(() => {});
     } else if (this.options.provider === "gcs" && this.gcsStorage) {
       const bucket = this.gcsStorage.bucket(this.options.bucket);
       const file = bucket.file(key);
       const archiveFile = bucket.file(key.replace("backups/", "cold-storage/"));
 
       await file.copy(archiveFile);
+      void recordApiCapabilityUsage(this.scopeIntegration(), "copy_object").catch(() => {});
       await file.delete();
+      void recordApiCapabilityUsage(this.scopeIntegration(), "delete_object").catch(() => {});
     } else {
       throw new Error(`Unsupported cloud provider: ${this.options.provider}`);
     }
@@ -386,18 +427,26 @@ export class DatabaseBackupService {
           .on("finish", resolve)
           .on("error", reject);
       });
+      void recordApiCapabilityUsage(this.scopeIntegration(), "get_object").catch(() => {});
     } else if (this.options.provider === "gcs" && this.gcsStorage) {
       const bucket = this.gcsStorage.bucket(this.options.bucket);
       const file = bucket.file(key);
 
       await file.download({ destination: outputPath });
+      void recordApiCapabilityUsage(this.scopeIntegration(), "get_object").catch(() => {});
     } else {
       throw new Error(`Unsupported cloud provider: ${this.options.provider}`);
     }
   }
 
   /**
-   * Decrypts a file using AES-256-CBC
+   * Decrypts a file using AES-256-CBC.
+   *
+   * Mirrors encryptFile's format exactly: the key is sha256(decryptionKey)
+   * (not the raw passphrase) and the IV is the first 16 bytes of the file,
+   * prepended by encryptFile rather than derived — createDecipheriv needs
+   * both read off in the same way encryptFile wrote them, or the restore
+   * decrypts to garbage.
    */
   private async decryptFile(
     inputPath: string,
@@ -406,16 +455,20 @@ export class DatabaseBackupService {
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        const { createDecipher } = require("crypto");
-        const decipher = createDecipher("aes-256-cbc", decryptionKey);
-        const input = createReadStream(inputPath);
+        const fileData = require("fs").readFileSync(inputPath);
+        const iv = fileData.subarray(0, 16);
+        const ciphertext = fileData.subarray(16);
+
+        const key = createHash("sha256").update(decryptionKey).digest();
+        const decipher = createDecipheriv("aes-256-cbc", key, iv);
         const output = require("fs").createWriteStream(outputPath);
 
-        input
-          .pipe(decipher)
-          .pipe(output)
-          .on("finish", () => resolve())
-          .on("error", reject);
+        output.on("finish", () => resolve());
+        output.on("error", reject);
+        decipher.on("error", reject);
+
+        decipher.pipe(output);
+        decipher.end(ciphertext);
       } catch (error) {
         reject(error);
       }

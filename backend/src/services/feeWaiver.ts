@@ -276,7 +276,7 @@ export async function decideWaiverRequest(input: DecideWaiverInput) {
 
   await (prisma as any).loanApplication.update({
     where: { id: request.loanApplicationId },
-    data: { lateFeeBalance: newLateFeeBalance },
+    data: { lateFeeBalance: newLateFeeBalance, version: { increment: 1 } },
   });
 
   logAudit({

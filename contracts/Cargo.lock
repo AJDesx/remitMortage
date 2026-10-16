@@ -214,6 +214,7 @@ dependencies = [
 name = "bridge-adapter"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "soroban-sdk",
 ]
 
@@ -224,6 +225,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
 dependencies = [
  "tinyvec",
+]
+
+[[package]]
+name = "budget-tests"
+version = "0.1.0"
+dependencies = [
+ "bridge-adapter",
+ "escrow",
+ "governance",
+ "insurance-pool",
+ "lending-pool",
+ "milestone",
+ "multisig-validator",
+ "oracle-price",
+ "serde_json",
+ "soroban-sdk",
+ "staking-pool",
+ "verification-registry",
+ "yield-vault",
 ]
 
 [[package]]
@@ -897,6 +917,7 @@ dependencies = [
 name = "lending-pool"
 version = "0.1.0"
 dependencies = [
+ "governance",
  "insurance-pool",
  "multisig-validator",
  "proptest",
@@ -938,6 +959,7 @@ checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 name = "milestone"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "soroban-sdk",
 ]
 

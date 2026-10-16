@@ -14,6 +14,7 @@
     "application": "Solicitar",
     "identity": "Identidad y KYC",
     "protocol": "Módulos del protocolo",
+    "help": "Centro de ayuda",
     "language": "Idioma"
   },
   "footer": {

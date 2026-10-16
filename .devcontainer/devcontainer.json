@@ -1,0 +1,37 @@
+{
+  "name": "RemitMortgage",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "workspace",
+  "workspaceFolder": "/workspaces/remitMortgage",
+  "shutdownAction": "stopCompose",
+  "runServices": ["postgres", "redis"],
+  "forwardPorts": [3000, 4000, 5432, 6379],
+  "portsAttributes": {
+    "3000": { "label": "Frontend (Next.js)", "onAutoForward": "notify" },
+    "4000": { "label": "Backend API", "onAutoForward": "notify" },
+    "5432": { "label": "PostgreSQL" },
+    "6379": { "label": "Redis" }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteUser": "node",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "bradlc.vscode-tailwindcss",
+        "Prisma.prisma",
+        "github.vscode-github-actions",
+        "ms-playwright.playwright"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "rust-analyzer.cargo.target": "wasm32-unknown-unknown",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

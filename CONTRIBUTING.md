@@ -57,9 +57,31 @@ The protocol is designed around a core principle: **Separating Verification from
 
 ## Getting Started
 
-### Prerequisites
+### Dev Container (recommended — one command)
 
-To build and test the full suite, you will need:
+The fastest way to get a working environment is the
+[dev container](docs/DEV_CONTAINER.md). It pins Node.js 22, Rust (with the
+`wasm32-unknown-unknown` / `wasm32v1-none` targets), PostgreSQL and Redis, seeds
+the database automatically, and forwards the standard ports.
+
+1.  Install [Docker](https://docs.docker.com/get-docker/) and the VS Code
+    [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+2.  Open the repository and run **Dev Containers: Reopen in Container**.
+3.  Once it finishes setting up, run:
+
+    ```bash
+    make dev    # backend on :4000, frontend on :3000
+    make test   # backend + frontend + smart-contract tests
+    ```
+
+    Run `make help` to see every shortcut (`setup`, `db-migrate`, `db-seed`,
+    `build`, `up`, `down`, `logs`). The image is built in CI on every change to
+    `.devcontainer/`, so it cannot silently break.
+
+### Prerequisites (manual setup)
+
+If you prefer not to use the dev container, install the toolchains yourself:
+
 *   **Rust Toolchain:** Version 1.75+ (with `wasm32-unknown-unknown` target installed via `rustup target add wasm32-unknown-unknown`)
 *   **Soroban CLI:** Install via `cargo install --locked soroban-cli`
 *   **Node.js:** Version 18+ (with `npm` or `yarn`)

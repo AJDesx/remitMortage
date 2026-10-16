@@ -33,6 +33,21 @@ RemitMortgage makes remittance history count:
 
 ## Running it locally
 
+### Recommended: dev container (one command)
+
+Open the repository in a [dev container](docs/DEV_CONTAINER.md) and run the app
+and tests with no host setup:
+
+```bash
+make dev    # backend on :4000, frontend on :3000
+make test   # backend + frontend + smart-contract tests
+```
+
+The container pins Node.js, Rust (with the wasm target), PostgreSQL and Redis,
+seeds the database, and is built in CI so it cannot silently break.
+
+### Manual setup
+
 For local offline testing, you can spin up a local mock Stellar network (including Horizon, Soroban RPC, and Friendbot) in a Docker container using Docker Compose. Refer to the [Stellar Quickstart Docker Sandbox Guide](docs/LOCAL_SANDBOX.md) for detailed instructions on setting up and deploying contracts locally.
 
 ### Prerequisites
@@ -102,4 +117,4 @@ Refer to those guides to deploy contracts, fund wallets, and exercise the full b
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file

@@ -5,9 +5,19 @@ import winston from "winston";
 import rTracer from "cls-rtracer";
 import { trace } from "@opentelemetry/api";
 
+import {
+  DEFAULT_SERVICE_NAME,
+  initLogSampling,
+  logSamplingFormat,
+} from "./logSampling.js";
+
 const { combine, timestamp, json, colorize, simple, errors, printf } = winston.format;
 
 const isProduction = process.env.NODE_ENV === "production";
+
+// Load the sampling / log-volume-budget policy before the logger is built so
+// the format below reads the final configuration.
+initLogSampling();
 
 /** Adds correlation ID (request tracing) to log metadata */
 const requestIdFormat = winston.format((info) => {
@@ -31,7 +41,7 @@ const requestIdFormat = winston.format((info) => {
 /** Adds runtime environment context to logs */
 const environmentFormat = winston.format((info) => {
   info.environment = process.env.NODE_ENV || "development";
-  info.service = "remitmortgage-backend";
+  info.service = DEFAULT_SERVICE_NAME;
   return info;
 });
 
@@ -49,6 +59,9 @@ const logger = winston.createLogger({
     requestIdFormat(),
     environmentFormat(),
     timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
+    // Samples noisy debug/info lines and accounts log volume. Errors, warnings
+    // and audit events are never dropped (see utils/logSampling.ts).
+    logSamplingFormat(),
     isProduction ? json() : combine(colorize(), devFormat)
   ),
   defaultMeta: {
@@ -71,6 +84,7 @@ export function logHttpRequest(
   metadata: Record<string, unknown> = {}
 ) {
   logger.info("HTTP Request", {
+    source: "http",
     method,
     path,
     statusCode,
@@ -86,6 +100,7 @@ export function logError(
   context: Record<string, unknown> = {}
 ) {
   logger.error(message, {
+    source: "error",
     error: {
       message: error.message,
       name: error.name,
@@ -93,6 +108,20 @@ export function logError(
     },
     ...context,
   });
+}
+
+/**
+ * Emit an audit event.
+ *
+ * Always logged at `info` level but tagged `audit: true` / `source: "audit"`
+ * so the sampling policy can never drop it (issue #875). Audit events are part
+ * of the compliance trail and must survive regardless of volume pressure.
+ */
+export function logAuditEvent(
+  message: string,
+  metadata: Record<string, unknown> = {}
+) {
+  logger.info(message, { ...metadata, source: "audit", audit: true });
 }
 
 export default logger;

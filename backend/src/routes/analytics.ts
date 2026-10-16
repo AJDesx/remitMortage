@@ -1,7 +1,8 @@
 // Copyright (c) 2026 RemitMortgage Protocol Contributors
 // SPDX-License-Identifier: MIT
 
-import { Router } from "express";
+import { Router, type Request } from "express";
+import { readYourWritesSessionKey } from "../middleware/readYourWrites.js";
 import {
   getProtocolOverview,
   getLoanPerformance,
@@ -27,6 +28,10 @@ import {
 } from "../services/analyticsEvents.js";
 
 export const analyticsRouter = Router();
+
+function sessionId(req: Request): string | undefined {
+  return readYourWritesSessionKey(req);
+}
 
 function queryDateRange(req: any): { start: Date; end: Date } | null {
   const start = new Date(String(req.query.start ?? ""));
@@ -96,10 +101,26 @@ const MAX_VOLUME_MONTHS = 24;
  *     responses:
  *       200:
  *         description: Protocol summary.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [tvl, totalBorrowers, totalInvestors, totalLoans]
+ *               properties:
+ *                 tvl:
+ *                   type: object
+ *                   required: [escrow, lendingPool, total]
+ *                   properties:
+ *                     escrow: { type: string }
+ *                     lendingPool: { type: string }
+ *                     total: { type: string }
+ *                 totalBorrowers: { type: integer }
+ *                 totalInvestors: { type: integer }
+ *                 totalLoans: { type: integer }
  */
 analyticsRouter.get("/overview", cacheMiddleware(60), async (req, res) => {
   try {
-    const overview = (await getProtocolOverviewFromView()) ?? getProtocolOverview();
+    const overview = (await getProtocolOverviewFromView(sessionId(req))) ?? getProtocolOverview();
     const currency = (req.query.currency as string) || "USD";
 
     if (currency !== "USD" && currency !== "USDC") {
@@ -136,9 +157,9 @@ analyticsRouter.get("/overview", cacheMiddleware(60), async (req, res) => {
  *       200:
  *         description: Loan performance metrics.
  */
-analyticsRouter.get("/loans", cacheMiddleware(60), async (_req, res) => {
+analyticsRouter.get("/loans", cacheMiddleware(60), async (req, res) => {
   try {
-    const performance = (await getLoanPerformanceFromView()) ?? getLoanPerformance();
+    const performance = (await getLoanPerformanceFromView(sessionId(req))) ?? getLoanPerformance();
     res.json(performance);
   } catch (error) {
     console.error("Analytics loans error:", error);
@@ -162,7 +183,7 @@ analyticsRouter.get("/loans", cacheMiddleware(60), async (_req, res) => {
  */
 analyticsRouter.get("/disbursement", cacheMiddleware(60), async (req, res) => {
   try {
-    const progress = (await getDisbursementProgressFromView()) ?? getDisbursementProgress();
+    const progress = (await getDisbursementProgressFromView(sessionId(req))) ?? getDisbursementProgress();
     const currency = (req.query.currency as string) || "USD";
 
     if (currency !== "USD" && currency !== "USDC") {
@@ -213,7 +234,7 @@ analyticsRouter.get("/volume", cacheMiddleware(60), async (req, res) => {
       ? Math.min(Math.max(parsed, 1), MAX_VOLUME_MONTHS)
       : DEFAULT_VOLUME_MONTHS;
       
-    const volumeData = (await getMonthlyVolumeFromView(months)) ?? getMonthlyVolume(months);
+    const volumeData = (await getMonthlyVolumeFromView(months, sessionId(req))) ?? getMonthlyVolume(months);
     const currency = (req.query.currency as string) || "USD";
 
     if (currency !== "USD" && currency !== "USDC") {

@@ -6,7 +6,12 @@ import React, { Suspense, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useTransactionMonitor } from "../../../hooks/useTransactionMonitor";
-import { parseTransactionType, storeTxSuccessFeedback } from "../../../lib/transaction-status";
+import {
+  describeTransactionAnnouncement,
+  parseTransactionType,
+  storeTxSuccessFeedback,
+} from "../../../lib/transaction-status";
+import { announce } from "../../../lib/announcer";
 import TransactionDetails from "../../../components/tx/TransactionDetails";
 import TransactionProgress from "../../../components/tx/TransactionProgress";
 import TransactionResult from "../../../components/tx/TransactionResult";
@@ -28,6 +33,16 @@ function TxStatusContent() {
     storeTxSuccessFeedback(hash, txType);
     router.push("/dashboard");
   }, [hash, router, txType]);
+
+  useEffect(() => {
+    if (!hash) return;
+    const announcement = describeTransactionAnnouncement(
+      txType,
+      monitor.phase,
+      monitor.contractError ?? monitor.pollError
+    );
+    if (announcement) announce(announcement.message, { priority: announcement.priority });
+  }, [hash, txType, monitor.phase, monitor.contractError, monitor.pollError]);
 
   useEffect(() => {
     if (monitor.phase !== "confirmed") return;

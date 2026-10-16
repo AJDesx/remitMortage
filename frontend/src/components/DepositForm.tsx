@@ -4,6 +4,7 @@
 
 import React, { useState } from "react";
 import { useToast } from "@/context/ToastContext";
+import { announce } from "@/lib/announcer";
 
 export default function DepositForm({ address }: { address: string }) {
   const [amount, setAmount] = useState("");
@@ -16,6 +17,7 @@ export default function DepositForm({ address }: { address: string }) {
     const n = Number(amount);
     if (Number.isNaN(n) || n <= 0) {
       setError("Amount must be a positive number");
+      announce("Deposit amount must be a positive number.", { priority: "assertive" });
       return false;
     }
     return true;

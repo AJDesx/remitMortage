@@ -300,3 +300,38 @@ export function consumeTxSuccessFeedback(): { hash: string; type: TransactionTyp
     return null;
   }
 }
+
+/**
+ * Screen-reader copy for a transaction phase transition. Returns null for
+ * phases that carry no news (idle). Failures use assertive priority.
+ */
+export function describeTransactionAnnouncement(
+  transactionType: TransactionType,
+  phase: TransactionModalPhase | TxUiPhase,
+  errorMessage?: string | null
+): { message: string; priority: "polite" | "assertive" } | null {
+  const label = transactionType.toLowerCase();
+  switch (phase) {
+    case "simulating":
+      return { message: `Simulating ${label}.`, priority: "polite" };
+    case "signing":
+      return { message: `Approve the ${label} in your wallet.`, priority: "polite" };
+    case "submitted":
+    case "pending":
+    case "pending_confirmation":
+      return { message: `${transactionType} submitted. Waiting for network confirmation.`, priority: "polite" };
+    case "success":
+    case "confirmed":
+      return { message: `${transactionType} confirmed on the network.`, priority: "polite" };
+    case "error":
+    case "failed":
+      return {
+        message: errorMessage
+          ? `${transactionType} failed. ${formatTransactionErrorMessage(errorMessage)}`
+          : `${transactionType} failed.`,
+        priority: "assertive",
+      };
+    default:
+      return null;
+  }
+}

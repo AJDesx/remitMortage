@@ -7,7 +7,7 @@ import { sendWebhook } from "../services/webhook.js";
 import { runEscrowReconciliation } from "../jobs/escrowReconciliation.js";
 import logger from "../utils/logger.js";
 import { requireAdmin, type AuthenticatedRequest } from "../middleware/auth.js";
-import { bulkReviewApplications, type BulkReviewDecision } from "../services/loanStore.js";
+import { bulkReviewApplications, getApplication, type BulkReviewDecision } from "../services/loanStore.js";
 import { mergeApplicants, MergeValidationError } from "../services/applicantMerge.js";
 import { promoteWaitlistBatch } from "../services/inviteCode.js";
 import { runSuspiciousActivityScan } from "../services/suspiciousActivity.js";
@@ -25,8 +25,31 @@ import {
   MAX_LATENCY_WINDOW_MINUTES,
 } from "../services/webhookLatency.js";
 import { listSuppressedApplicants } from "../services/emailSuppression.js";
+import { runTableBloatScan, getLatestTableBloatSnapshots } from "../services/tableBloatMonitor.js";
+import { getApplicantCommunicationTimeline } from "../services/communicationTimeline.js";
 import { runUnusedIndexAuditJob } from "../jobs/unusedIndexAudit.js";
+import {
+  ForensicsReviewError,
+  listFlaggedDocuments,
+  reviewFlaggedDocument,
+} from "../services/kycDocumentForensics.js";
 import { loadConfig } from "../config.js";
+import { requiresFourEyesApproval } from "../services/fourEyesPolicy.js";
+import {
+  createApprovalRequest,
+  getApprovalRequest,
+  listPendingApprovalRequests,
+  markExecuted,
+  approveRequest,
+  rejectRequest,
+  FourEyesError,
+} from "../services/fourEyesApproval.js";
+import {
+  getModelConfig,
+  getShadowEvaluations,
+  getShadowMetrics,
+  updateModelConfig,
+} from "../services/scoring.js";
 
 export const adminRouter = Router();
 
@@ -81,6 +104,25 @@ adminRouter.patch("/compliance/suspicious-activity/:id", requireAdmin, async (re
  *       - Admin
  *     security:
  *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Batch review completed; per-application successes and failures are returned.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [processed, failed, results, failures]
+ *               properties:
+ *                 processed: { type: integer }
+ *                 failed: { type: integer }
+ *                 results: { type: array, items: { type: object } }
+ *                 failures: { type: array, items: { type: object } }
+ *       400:
+ *         description: The review list is missing, empty, or invalid.
+ *       403:
+ *         description: Reviewer identity is missing.
+ *       500:
+ *         description: The batch review could not be completed.
  */
 /**
  * @openapi
@@ -127,9 +169,23 @@ adminRouter.post("/loans/bulk-review", requireAdmin, async (req: AuthenticatedRe
     applicationId: typeof item?.applicationId === "string" ? item.applicationId : item?.id,
     decision: item?.decision,
     reason: item?.reason,
+    // Optimistic lock (issue #846): optional per item so batched callers can
+    // stay backward compatible, strictly validated when supplied.
+    version: item?.version,
   }));
   if (items.some((item: any) => !item.applicationId || !["approve", "reject"].includes(item.decision))) {
     return res.status(400).json({ error: "invalid_request", message: "Each review requires an applicationId and an approve or reject decision" });
+  }
+  if (
+    items.some(
+      (item: any) =>
+        item.version !== undefined &&
+        (typeof item.version !== "number" || !Number.isInteger(item.version) || item.version < 1)
+    )
+  ) {
+    return res
+      .status(400)
+      .json({ error: "invalid_request", message: "Each review's version must be an integer >= 1 when provided" });
   }
 
   const reviewerAddress = req.user?.walletAddress;
@@ -139,16 +195,33 @@ adminRouter.post("/loans/bulk-review", requireAdmin, async (req: AuthenticatedRe
 
   try {
     const review = await bulkReviewApplications(
-      items as Array<{ applicationId: string; decision: BulkReviewDecision; reason?: string }>,
+      items as Array<{
+        applicationId: string;
+        decision: BulkReviewDecision;
+        reason?: string;
+        version?: number;
+      }>,
       reviewerAddress,
       req.ip,
     );
-    return res.status(200).json({
+    const payload = {
       processed: review.results.length,
       failed: review.failures.length,
       results: review.results,
       failures: review.failures,
-    });
+    };
+    // Optimistic lock (issue #846): any stale decision turns the batch into a
+    // 409 so it can't be mistaken for a successful review — each conflicted
+    // failure carries the current state needed to re-read and retry.
+    const conflicts = review.failures.filter((f) => f.error === "version_conflict");
+    if (conflicts.length > 0) {
+      return res.status(409).json({
+        error: "version_conflict",
+        message: `${conflicts.length} review(s) targeted a stale version and were rejected`,
+        ...payload,
+      });
+    }
+    return res.status(200).json(payload);
   } catch (error) {
     logger.error("Bulk loan review error", { error });
     return res.status(500).json({ error: "bulk_review_failed" });
@@ -171,39 +244,21 @@ adminRouter.get("/loans/:id/tax-id-matches", requireAdmin, async (req: Authentic
   }
 });
 
-// ── Verification Score Explainability (reviewer view) ────────────────────
-// The reason codes + plain-language text behind an applicant's most recent
-// credit score, exactly as stored on VerificationResult at scoring time —
-// reproducible without recomputing against (possibly since-changed)
-// scoring weights. Accepts either the applicant's id or stellarAddress.
-adminRouter.get("/applicants/:id/verification-score", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+/**
+ * Unified email/SMS/in-app notification timeline for one applicant, so
+ * support staff can answer "did they actually receive our reminder?" without
+ * checking three separate logs. `:id` may be an applicant id or stellar address.
+ */
+adminRouter.get("/applicants/:id/communications", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const applicantIdOrAddress = String(req.params.id);
-    const result = await prisma.verificationResult.findFirst({
-      where: {
-        applicant: {
-          OR: [{ id: applicantIdOrAddress }, { stellarAddress: applicantIdOrAddress }],
-        },
-      },
-      orderBy: { analyzedAt: "desc" },
-    });
-
-    if (!result) {
-      return res.status(404).json({ error: "not_found", message: "No verification result found for this applicant" });
+    const timeline = await getApplicantCommunicationTimeline(String(req.params.id));
+    if (!timeline) {
+      return res.status(404).json({ error: "not_found", message: "Applicant not found" });
     }
-
-    return res.json({
-      applicantId: result.applicantId,
-      eligible: result.eligible,
-      score: result.score,
-      modelVersion: result.modelVersion,
-      breakdown: result.scoreBreakdown,
-      reasons: result.scoreReasons,
-      analyzedAt: result.analyzedAt,
-    });
+    return res.json(timeline);
   } catch (error) {
-    logger.error("Verification score lookup error", { error });
-    return res.status(500).json({ error: "failed_to_load_verification_score" });
+    logger.error("Applicant communication timeline error", { error });
+    return res.status(500).json({ error: "failed_to_load_communication_timeline" });
   }
 });
 
@@ -211,15 +266,45 @@ adminRouter.get("/applicants/:id/verification-score", requireAdmin, async (req: 
 
 adminRouter.post("/loans/:id/servicing-transfer", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   const body = req.body ?? {};
+  const loanId = String(req.params.id);
+  const requestedBy = req.user?.walletAddress ?? "admin-api-key";
   try {
+    const loan = await getApplication(loanId);
+    if (!loan) {
+      return res.status(404).json({ error: "not_found", message: "Loan application not found" });
+    }
+
+    const amount = Number(loan.amount);
+    if (requiresFourEyesApproval("LOAN_SERVICING_TRANSFER", Number.isFinite(amount) ? amount : null)) {
+      const request = await createApprovalRequest({
+        actionType: "LOAN_SERVICING_TRANSFER",
+        payload: {
+          loanId,
+          toServicer: body.toServicer,
+          toServicerContact: body.toServicerContact,
+          effectiveDate: body.effectiveDate,
+          reason: body.reason,
+          investorAddresses: body.investorAddresses,
+          ipAddress: req.ip,
+        },
+        amount: Number.isFinite(amount) ? amount : null,
+        requestedBy,
+      });
+      return res.status(202).json({
+        fourEyesApprovalRequired: true,
+        approvalRequestId: request.id,
+        message: "This transfer exceeds the four-eyes approval threshold and will execute once a distinct second admin approves it.",
+      });
+    }
+
     const transfer = await initiateServicingTransfer({
-      loanId: String(req.params.id),
+      loanId,
       toServicer: body.toServicer,
       toServicerContact: body.toServicerContact,
       effectiveDate: body.effectiveDate,
       reason: body.reason,
       investorAddresses: body.investorAddresses,
-      initiatedBy: req.user?.walletAddress ?? "admin-api-key",
+      initiatedBy: requestedBy,
       ipAddress: req.ip,
     });
     return res.status(201).json(transfer);
@@ -229,6 +314,98 @@ adminRouter.post("/loans/:id/servicing-transfer", requireAdmin, async (req: Auth
     }
     logger.error("Loan servicing transfer error", { error });
     return res.status(500).json({ error: "servicing_transfer_failed" });
+  }
+});
+
+// ── Four-eyes approval queue (issue #841) ─────────────────────────────────
+
+adminRouter.get("/four-eyes/requests", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json({ requests: await listPendingApprovalRequests() });
+  } catch (error) {
+    logger.error("List four-eyes requests error", { error });
+    return res.status(500).json({ error: "failed_to_list_requests" });
+  }
+});
+
+adminRouter.get("/four-eyes/requests/:id", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const request = await getApprovalRequest(String(req.params.id));
+    if (!request) {
+      return res.status(404).json({ error: "not_found", message: "Approval request not found" });
+    }
+    return res.json({ request });
+  } catch (error) {
+    logger.error("Get four-eyes request error", { error });
+    return res.status(500).json({ error: "failed_to_get_request" });
+  }
+});
+
+/**
+ * Executes a request's stored payload once approved. Each action type that
+ * can be routed through four-eyes is dispatched here; an unrecognized type
+ * (should never happen — it was only created by a route that knows how to
+ * execute it) is logged and left unexecuted rather than guessed at.
+ */
+async function executeApprovedRequest(request: { id: string; actionType: string; payload: unknown; approvedBy: string | null }) {
+  const payload = (request.payload ?? {}) as Record<string, any>;
+
+  if (request.actionType === "LOAN_SERVICING_TRANSFER") {
+    await initiateServicingTransfer({
+      loanId: payload.loanId,
+      toServicer: payload.toServicer,
+      toServicerContact: payload.toServicerContact,
+      effectiveDate: payload.effectiveDate,
+      reason: payload.reason,
+      investorAddresses: payload.investorAddresses,
+      initiatedBy: request.approvedBy ?? "four-eyes-approval",
+      ipAddress: payload.ipAddress,
+    });
+  } else {
+    logger.error("[four-eyes] No executor registered for action type", { actionType: request.actionType, requestId: request.id });
+    return;
+  }
+
+  await markExecuted(request.id);
+}
+
+adminRouter.post("/four-eyes/requests/:id/approve", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const approverAddress = req.user?.walletAddress ?? "admin-api-key";
+  try {
+    const approved = await approveRequest(String(req.params.id), approverAddress);
+    try {
+      await executeApprovedRequest(approved);
+    } catch (execError) {
+      logger.error("[four-eyes] Approved request failed to execute", { requestId: approved.id, execError });
+      return res.status(500).json({
+        error: "execution_failed",
+        message: "Approved but failed to execute — see server logs. The approval is recorded; it was not silently lost.",
+        request: approved,
+      });
+    }
+    return res.json({ request: approved });
+  } catch (error) {
+    if (error instanceof FourEyesError) {
+      const status = error.code === "not_found" ? 404 : 409;
+      return res.status(status).json({ error: error.code, message: error.message });
+    }
+    logger.error("Approve four-eyes request error", { error });
+    return res.status(500).json({ error: "failed_to_approve_request" });
+  }
+});
+
+adminRouter.post("/four-eyes/requests/:id/reject", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const approverAddress = req.user?.walletAddress ?? "admin-api-key";
+  try {
+    const rejected = await rejectRequest(String(req.params.id), approverAddress, String(req.body?.reason ?? ""));
+    return res.json({ request: rejected });
+  } catch (error) {
+    if (error instanceof FourEyesError) {
+      const status = error.code === "not_found" ? 404 : error.code === "missing_reason" ? 400 : 409;
+      return res.status(status).json({ error: error.code, message: error.message });
+    }
+    logger.error("Reject four-eyes request error", { error });
+    return res.status(500).json({ error: "failed_to_reject_request" });
   }
 });
 
@@ -345,51 +522,35 @@ adminRouter.get("/email-suppressions", requireAdmin, async (_req: AuthenticatedR
 });
 
 /**
- * @openapi
- * /api/admin/db/unused-indexes:
- *   get:
- *     summary: Manually trigger the unused-index candidate report
- *     description: >-
- *       Report-only (issue #758). Scans pg_stat_user_indexes for indexes with
- *       sustained near-zero usage, excludes constraint-backing indexes, and
- *       returns candidates with table/columns/size context for human review.
- *       Never drops an index — see docs/UNUSED_INDEX_REVIEW.md.
- *     tags:
- *       - Admin
- *     responses:
- *       200:
- *         description: Unused-index report.
+ * Latest dead-tuple bloat snapshot per table, most bloated first, for the
+ * database health dashboard.
  */
-adminRouter.get("/db/unused-indexes", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+adminRouter.get("/database/table-bloat", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
   try {
-    const { report } = await runUnusedIndexAuditJob();
-    return res.json(report);
+    return res.json({ tables: await getLatestTableBloatSnapshots() });
   } catch (error) {
-    logger.error("Unused index audit error", { error });
-    return res.status(500).json({ error: "unused_index_audit_failed" });
+    logger.error("List table bloat snapshots error", { error });
+    return res.status(500).json({ error: "failed_to_list_table_bloat" });
   }
 });
 
-/**
- * @openapi
- * /api/admin/db/query-killer:
- *   post:
- *     summary: Manually trigger the long-running query killer sweep
- *     description: >-
- *       Ops-only (issue #736). Terminates backends running past
- *       QUERY_KILLER_THRESHOLD_MS, never touching the documented
- *       maintenance allowlist. Every termination is logged/alerted with
- *       query text and origin context.
- *     tags:
- *       - Admin
- */
-adminRouter.post("/db/query-killer", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+/** Triggers an on-demand bloat scan, manually VACUUMing any table at or above the critical threshold. */
+adminRouter.post("/database/table-bloat/scan", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
   try {
-    const { runQueryKillerJob } = await import("../jobs/queryKiller.js");
-    return res.json(await runQueryKillerJob());
+    const result = await runTableBloatScan();
+    return res.json({
+      scannedAt: result.scannedAt,
+      tablesScanned: result.tablesScanned,
+      findings: result.findings.map((f) => ({
+        ...f,
+        liveTuples: f.liveTuples.toString(),
+        deadTuples: f.deadTuples.toString(),
+        tableSizeBytes: f.tableSizeBytes.toString(),
+      })),
+    });
   } catch (error) {
-    logger.error("Query killer error", { error });
-    return res.status(500).json({ error: "query_killer_failed" });
+    logger.error("Table bloat scan error", { error });
+    return res.status(500).json({ error: "table_bloat_scan_failed" });
   }
 });
 
@@ -600,3 +761,39 @@ adminRouter.post("/scoring/models", requireAdmin, async (req: AuthenticatedReque
     return res.status(500).json({ error: "failed_to_update_scoring_models" });
   }
 });
+
+// ── KYC document forgery review (issue #813) ─────────────────────────────
+// Documents whose metadata looked tampered with are queued here for a human;
+// each entry carries the specific signals that triggered the flag.
+
+adminRouter.get("/kyc/flagged-documents", requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    return res.json({ documents: await listFlaggedDocuments() });
+  } catch (error) {
+    logger.error("List flagged KYC documents error", { error });
+    return res.status(500).json({ error: "failed_to_list_flagged_documents" });
+  }
+});
+
+adminRouter.post(
+  "/kyc/flagged-documents/:documentId/review",
+  requireAdmin,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const reviewed = await reviewFlaggedDocument({
+        documentId: String(req.params.documentId),
+        reviewedBy: req.user?.walletAddress ?? "admin-api-key",
+        outcome: req.body?.outcome,
+        note: typeof req.body?.note === "string" ? req.body.note : null,
+      });
+      return res.json({ document: reviewed });
+    } catch (error) {
+      if (error instanceof ForensicsReviewError) {
+        const status = error.code === "not_found" ? 404 : error.code === "invalid_outcome" ? 400 : 409;
+        return res.status(status).json({ error: error.code, message: error.message });
+      }
+      logger.error("Review flagged KYC document error", { error });
+      return res.status(500).json({ error: "failed_to_review_document" });
+    }
+  }
+);
