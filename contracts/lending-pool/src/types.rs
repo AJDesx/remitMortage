@@ -410,6 +410,8 @@ pub enum DataKey {
     LoanAssumption(BytesN<32>),
     /// Locked payoff quote for a loan, keyed by loan ID.
     PayoffQuote(BytesN<32>),
+    /// Revolving credit line keyed by borrower address.
+    CreditLine(Address),
 }
 
 /// A pending loan assumption request where an existing borrower proposes to transfer
@@ -448,4 +450,24 @@ pub struct PayoffQuote {
     pub quoted_at_ledger: u32,
     /// Last ledger at which the quote is still valid (inclusive).
     pub expires_ledger: u32,
+}
+
+/// A revolving credit line secured against a borrower's escrow position,
+/// similar to a HELOC: once approved, the borrower may draw and repay
+/// repeatedly up to `approved_limit` without re-applying for a new loan.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreditLine {
+    /// The borrower's address.
+    pub borrower: Address,
+    /// Maximum balance the borrower may have drawn at any one time.
+    pub approved_limit: i128,
+    /// Currently drawn (outstanding) balance, including accrued interest.
+    pub drawn_balance: i128,
+    /// Annual interest rate in basis points, charged only on `drawn_balance`.
+    pub interest_rate_bps: u32,
+    /// Ledger when the credit line was opened.
+    pub opened_ledger: u32,
+    /// Ledger sequence when interest was last accrued on `drawn_balance`.
+    pub last_interest_ledger: u32,
 }

@@ -113,6 +113,13 @@ pub enum PoolError {
     PayoffQuoteExpired = 52,
     /// Payoff quotes are disabled (window is zero) or the window is invalid.
     InvalidQuoteWindow = 53,
+    /// A credit line already exists for this borrower.
+    CreditLineAlreadyExists = 54,
+    /// No credit line exists for this borrower.
+    CreditLineNotFound = 55,
+    /// Draw would exceed the approved credit limit minus the outstanding
+    /// drawn balance.
+    CreditLimitExceeded = 56,
 }
 
 #[contracterror]
