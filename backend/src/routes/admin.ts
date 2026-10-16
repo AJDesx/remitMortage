@@ -94,6 +94,15 @@ adminRouter.patch("/compliance/suspicious-activity/:id", requireAdmin, async (re
  *       - Admin
  *     security:
  *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Batch review completed; per-application successes and failures are returned.
+ *       400:
+ *         description: The review list is missing, empty, or invalid.
+ *       403:
+ *         description: Reviewer identity is missing.
+ *       500:
+ *         description: The batch review could not be completed.
  */
 /**
  * @openapi
