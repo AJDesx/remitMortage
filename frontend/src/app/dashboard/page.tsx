@@ -9,6 +9,8 @@ import loadDynamic from "next/dynamic";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { useWallet } from "../../context/WalletContext";
+import { useDemoMode } from "../../context/DemoModeContext";
+import { DEMO_BORROWER_STATUS } from "../../lib/demoData";
 import SavingsProgressCard from "../../components/SavingsProgressCard";
 import LoanStatusCard from "../../components/LoanStatusCard";
 import LoanTermsNarrationControls from "../../components/LoanTermsNarrationControls";
@@ -40,6 +42,7 @@ import { SortableWidget } from '../../components/dashboard/SortableWidget';
 import { WidgetSettingsModal } from '../../components/dashboard/WidgetSettingsModal';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 import { track } from "../../lib/analytics";
+import { useToast } from "@/context/ToastContext";
 
 
 const Navbar = loadDynamic(() => import("../../components/Navbar"), { ssr: false });
@@ -154,6 +157,9 @@ export default function DashboardPage() {
   const t = useTranslations("dashboard");
   const router = useRouter();
   const { publicKey, isConnected } = useWallet();
+  const { isDemoMode } = useDemoMode();
+  const { toast } = useToast();
+  const effectivePublicKey = publicKey ?? (isDemoMode ? DEMO_BORROWER_STATUS.address : null);
   const [status, setStatus] = useState<BorrowerStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -281,7 +287,7 @@ export default function DashboardPage() {
                   deposited={status.escrow.deposited}
                   target={status.escrow.target}
                   progress={status.escrow.progress}
-                  shareId={publicKey ?? undefined}
+                  shareId={effectivePublicKey ?? undefined}
                 />
               </div>
               <div id="tour-loan-status" className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-xl flex flex-col justify-between">
@@ -289,13 +295,13 @@ export default function DashboardPage() {
                 <LoanTermsNarrationControls className="mt-4" />
                 <div className="mt-6 pt-6 border-t border-slate-800 flex gap-3">
                   <button
-                    onClick={() => setShowDeposit(true)}
+                    onClick={() => guardLiveAction(() => setShowDeposit(true))}
                     className="btn-cta flex-1 justify-center"
                   >
                     Deposit Savings
                   </button>
                   <button
-                    onClick={() => router.push("/repay")}
+                    onClick={() => guardLiveAction(() => router.push("/repay"))}
                     className="btn-outline-blue flex-1 justify-center"
                   >
                     Repay Installments &rarr;
@@ -336,7 +342,7 @@ export default function DashboardPage() {
 
 
   function buildDashboardStatement() {
-    if (!publicKey || !status) return null;
+    if (!effectivePublicKey || !status) return null;
 
     const rows: StatementRow[] = milestones.map((milestone) => ({
       date: milestone.completedDate ?? milestone.scheduledDate,
@@ -355,9 +361,9 @@ export default function DashboardPage() {
       subtitle:
         "Escrow savings, loan status, and milestone progress for mortgage underwriting review.",
       metadata: createStatementMetadata({
-        borrowerName: `Wallet ${shortenAddress(publicKey)}`,
-        borrowerAddress: publicKey,
-        walletType: "Freighter / Stellar",
+        borrowerName: `Wallet ${shortenAddress(effectivePublicKey)}`,
+        borrowerAddress: effectivePublicKey,
+        walletType: isDemoMode ? "Demo" : "Freighter / Stellar",
       }),
       summary: [
         { label: "Escrow deposited", value: `${status.escrow.deposited} USDC` },
@@ -387,6 +393,18 @@ export default function DashboardPage() {
 
   const loadStatus = useCallback(
     async ({ background = false }: { background?: boolean } = {}) => {
+      // Demo mode never calls the live API — it renders the mocked layer only.
+      if (isDemoMode) {
+        setStatus(DEMO_BORROWER_STATUS);
+        setError(null);
+        setMilestones(SAMPLE_MILESTONES);
+        setRecoveryPlan(
+          generateRecoveryPlan({ missedPayments: 0, consecutiveLate: 0, onTimePayments: 10 })
+        );
+        if (!background) setLoading(false);
+        return;
+      }
+
       if (!publicKey) return;
       if (!background) {
         setLoading(true);
@@ -414,11 +432,11 @@ export default function DashboardPage() {
         if (!background) setLoading(false);
       }
     },
-    [publicKey]
+    [publicKey, isDemoMode]
   );
 
   useEffect(() => {
-    if (!isConnected) {
+    if (!isDemoMode && !isConnected) {
       router.push("/");
       return;
     }
@@ -428,7 +446,23 @@ export default function DashboardPage() {
     }
 
     load();
-  }, [isConnected, loadStatus, router]);
+  }, [isConnected, isDemoMode, loadStatus, router]);
+
+  /** Blocks an action that would otherwise touch a real wallet or the live backend while in demo mode. */
+  const guardLiveAction = useCallback(
+    (action: () => void) => {
+      if (isDemoMode) {
+        toast({
+          variant: "info",
+          title: "Demo mode",
+          message: "This is simulated. Exit demo mode and connect a real wallet to do this for real.",
+        });
+        return;
+      }
+      action();
+    },
+    [isDemoMode, toast]
+  );
 
   const backgroundRefresh = useCallback(() => loadStatus({ background: true }), [loadStatus]);
   useAutoRefresh(backgroundRefresh, refreshInterval, isConnected && !!publicKey);
@@ -485,7 +519,7 @@ export default function DashboardPage() {
             >
               Print Summary
             </button>
-            <button onClick={() => setShowDeposit(true)} className="btn-cta shadow-cyan-500/20">
+            <button onClick={() => guardLiveAction(() => setShowDeposit(true))} className="btn-cta shadow-cyan-500/20">
               <svg
                 width="18"
                 height="18"
@@ -498,7 +532,7 @@ export default function DashboardPage() {
               </svg>
               {t("depositUsdc")}
             </button>
-            <button onClick={() => setShowWithdraw(true)} className="btn-outline-blue">
+            <button onClick={() => guardLiveAction(() => setShowWithdraw(true))} className="btn-outline-blue">
               {t("earlyExit")}
             </button>
           </div>
@@ -561,7 +595,7 @@ export default function DashboardPage() {
             <LoanPrintSummary
               loan={status.loan}
               escrow={status.escrow}
-              borrowerAddress={publicKey ?? undefined}
+              borrowerAddress={effectivePublicKey ?? undefined}
             />
             {/* Dynamic Escrow Maturity & Milestone Alerts Overlay */}
             <MaturityAlertOverlay
@@ -569,11 +603,13 @@ export default function DashboardPage() {
               loan={status.loan}
               creditAlert={recoveryPlan ? getBorrowerAlert(recoveryPlan) : null}
               creditScore={recoveryPlan?.currentScore ?? null}
-              onOpenDeposit={() => setShowDeposit(true)}
+              onOpenDeposit={() => guardLiveAction(() => setShowDeposit(true))}
               onOpenRecovery={() => setShowRecoveryTimeline(true)}
             />
 
-            {publicKey && <ReferralStatsCard ownerAddress={publicKey} />}
+            {/* Referral stats always call the live referral API, so this stays
+                out of demo mode rather than hitting it with a mocked address. */}
+            {!isDemoMode && publicKey && <ReferralStatsCard ownerAddress={publicKey} />}
 
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
               <SortableContext items={order} strategy={verticalListSortingStrategy}>
