@@ -36,6 +36,8 @@ const OPERATIONS_LINKS = [
   { href: "/protocol", labelKey: "protocol" },
 ];
 
+const SUPPORT_LINKS = [{ href: "/help", labelKey: "help" }];
+
 function InnerNavbar() {
   const {
     publicKey,
@@ -107,6 +109,19 @@ function InnerNavbar() {
                     })}
                   </div>
                 </div>
+              );
+            })}
+            {SUPPORT_LINKS.map(({ href, labelKey }) => {
+              const active = pathname === href || pathname.startsWith(`${href}/`);
+              return (
+              <Link
+                key={href}
+                href={href}
+                aria-current={active ? "page" : undefined}
+                className={`rm-nav-link text-slate-300 font-medium hover:text-cyan-400 transition-colors whitespace-nowrap relative px-3 py-2 group ${active ? "is-active" : ""}`}
+              >
+                {t(labelKey)}
+              </Link>
               );
             })}
           </nav>
@@ -216,6 +231,7 @@ function InnerNavbar() {
             { label: "Borrower", links: PRIMARY_LINKS },
             { label: "Financing", links: FINANCE_LINKS },
             { label: "Operations", links: OPERATIONS_LINKS },
+            { label: "Support", links: SUPPORT_LINKS },
           ].map((group) => <div className="rm-mobile-nav-group" key={group.label}>
             <span>{group.label}</span>
             {group.links.map(({ href, labelKey }) => {
