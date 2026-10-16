@@ -3,6 +3,28 @@
 
 import { RemittanceAnalysis } from "./stellar.js";
 
+/**
+ * One contributing factor behind a credit score, as a stable reason code
+ * plus plain-language text.
+ *
+ * `code` is the reproducible, machine-stable identifier — lending rules
+ * generally require adverse decisions to cite a *consistent* reason, not
+ * regenerated prose that can drift between releases. Once a code ships, its
+ * MEANING (which factor, which tier) must never change; a new tier gets a
+ * new code instead of repurposing an old one. See `scoring.test.ts`'s
+ * "reason codes are stable" test and `REASON_CODE_CATALOG` below for the
+ * full, frozen list.
+ */
+export interface ScoreReason {
+  code: string;
+  factor: "consistency" | "frequency" | "duration" | "volume";
+  text: string;
+  /** Points this factor contributed toward the score. */
+  contribution: number;
+  /** The factor's maximum possible contribution (its weight). */
+  maxContribution: number;
+}
+
 export interface CreditScoreResult {
   score: number;
   modelVersion: string;
@@ -13,6 +35,16 @@ export interface CreditScoreResult {
     volume: number;
   };
   tier: string;
+  /**
+   * The four scoring factors as reason codes, ordered by how much each one
+   * *held the score back* (largest gap between its max weight and its
+   * actual contribution first) — the natural order for "why isn't this
+   * score higher," which is what an adverse-decision notice needs to show.
+   * Always present and always exactly one entry per factor (see
+   * `scoring.test.ts`'s "every score carries reasons" test) — never omitted
+   * just because a factor scored well.
+   */
+  reasons: ScoreReason[];
   shadowScore?: {
     modelVersion: string;
     score: number;
@@ -94,6 +126,41 @@ const WEIGHTS_SHADOW = {
   VOLUME: 20,
 };
 
+/**
+ * Stable reason-code catalog. Each entry's `code` is a permanent identifier:
+ * once shipped, a code's meaning never changes — a new tier or threshold
+ * gets a brand-new code rather than redefining an existing one, so a reason
+ * code attached to a score years ago still means the same thing today.
+ */
+const REASON_CODE_CATALOG = {
+  consistencyHigh: { code: "CONSISTENCY_HIGH", text: "Payment amounts are highly consistent from one payment to the next." },
+  consistencyModerate: { code: "CONSISTENCY_MODERATE", text: "Payment amounts vary somewhat between payments." },
+  consistencyLow: { code: "CONSISTENCY_LOW", text: "Payment amounts vary significantly between payments." },
+  frequencyRegular: { code: "FREQUENCY_REGULAR", text: "Payments arrive on a regular schedule, about every 35 days or less." },
+  frequencyOccasional: { code: "FREQUENCY_OCCASIONAL", text: "Payments arrive somewhat irregularly, roughly every 36-60 days." },
+  frequencySparse: { code: "FREQUENCY_SPARSE", text: "Payments are sparse, roughly every 61-90 days." },
+  frequencyInsufficient: { code: "FREQUENCY_INSUFFICIENT", text: "Payments are too infrequent to establish a regular pattern (more than 90 days apart on average)." },
+  durationEstablished: { code: "DURATION_ESTABLISHED", text: "Payment history spans 12 months or more." },
+  durationModerate: { code: "DURATION_MODERATE", text: "Payment history spans 6 to 11 months." },
+  durationLimited: { code: "DURATION_LIMITED", text: "Payment history spans 3 to 5 months." },
+  durationInsufficient: { code: "DURATION_INSUFFICIENT", text: "Payment history spans less than 3 months." },
+  volumeSubstantial: { code: "VOLUME_SUBSTANTIAL", text: "Total payment volume is $5,000 or more." },
+  volumeModerate: { code: "VOLUME_MODERATE", text: "Total payment volume is between $2,000 and $4,999." },
+  volumeLow: { code: "VOLUME_LOW", text: "Total payment volume is between $500 and $1,999." },
+  volumeMinimal: { code: "VOLUME_MINIMAL", text: "Total payment volume is below $500." },
+  insufficientHistory: { code: "INSUFFICIENT_HISTORY", text: "Not enough payment history to compute a meaningful score — at least two payments with nonzero total volume are required." },
+} as const;
+
+function insufficientHistoryReasons(weights: typeof WEIGHTS_V1): ScoreReason[] {
+  const { code, text } = REASON_CODE_CATALOG.insufficientHistory;
+  return [
+    { code, factor: "consistency", text, contribution: 0, maxContribution: weights.CONSISTENCY },
+    { code, factor: "frequency", text, contribution: 0, maxContribution: weights.FREQUENCY },
+    { code, factor: "duration", text, contribution: 0, maxContribution: weights.DURATION },
+    { code, factor: "volume", text, contribution: 0, maxContribution: weights.VOLUME },
+  ];
+}
+
 function scoreWithWeights(analysis: RemittanceAnalysis, weights: typeof WEIGHTS_V1) {
   const totalAmount = parseFloat(analysis.totalAmountUSDC);
 
@@ -102,39 +169,59 @@ function scoreWithWeights(analysis: RemittanceAnalysis, weights: typeof WEIGHTS_
       score: 0,
       breakdown: { consistency: 0, frequency: 0, duration: 0, volume: 0 },
       tier: "Insufficient",
+      reasons: insufficientHistoryReasons(weights),
     };
   }
 
   const avgAmount = parseFloat(analysis.averageAmountUSDC);
   const cv = avgAmount > 0 ? analysis.standardDeviation / avgAmount : 1;
   const consistencyScore = Math.max(0, Math.round(weights.CONSISTENCY * (1 - cv)));
+  const consistencyRatio = weights.CONSISTENCY > 0 ? consistencyScore / weights.CONSISTENCY : 0;
+  const consistencyReason =
+    consistencyRatio >= 0.8
+      ? REASON_CODE_CATALOG.consistencyHigh
+      : consistencyRatio >= 0.4
+        ? REASON_CODE_CATALOG.consistencyModerate
+        : REASON_CODE_CATALOG.consistencyLow;
 
   const avgDaysBetween = (analysis.spanMonths * 30) / (analysis.totalPayments - 1);
   let frequencyScore = 0;
+  let frequencyReason = REASON_CODE_CATALOG.frequencyInsufficient;
   if (avgDaysBetween <= 35) {
     frequencyScore = weights.FREQUENCY;
+    frequencyReason = REASON_CODE_CATALOG.frequencyRegular;
   } else if (avgDaysBetween <= 60) {
     frequencyScore = Math.round(weights.FREQUENCY * 0.6);
+    frequencyReason = REASON_CODE_CATALOG.frequencyOccasional;
   } else if (avgDaysBetween <= 90) {
     frequencyScore = Math.round(weights.FREQUENCY * 0.2);
+    frequencyReason = REASON_CODE_CATALOG.frequencySparse;
   }
 
   let durationScore = 0;
+  let durationReason = REASON_CODE_CATALOG.durationInsufficient;
   if (analysis.spanMonths >= 12) {
     durationScore = weights.DURATION;
+    durationReason = REASON_CODE_CATALOG.durationEstablished;
   } else if (analysis.spanMonths >= 6) {
     durationScore = Math.round(weights.DURATION * 0.5);
+    durationReason = REASON_CODE_CATALOG.durationModerate;
   } else if (analysis.spanMonths >= 3) {
     durationScore = Math.round(weights.DURATION * 0.25);
+    durationReason = REASON_CODE_CATALOG.durationLimited;
   }
 
   let volumeScore = 0;
+  let volumeReason = REASON_CODE_CATALOG.volumeMinimal;
   if (totalAmount >= 5000) {
     volumeScore = weights.VOLUME;
+    volumeReason = REASON_CODE_CATALOG.volumeSubstantial;
   } else if (totalAmount >= 2000) {
     volumeScore = Math.round(weights.VOLUME * 0.66);
+    volumeReason = REASON_CODE_CATALOG.volumeModerate;
   } else if (totalAmount >= 500) {
     volumeScore = Math.round(weights.VOLUME * 0.33);
+    volumeReason = REASON_CODE_CATALOG.volumeLow;
   }
 
   const score = consistencyScore + frequencyScore + durationScore + volumeScore;
@@ -148,6 +235,16 @@ function scoreWithWeights(analysis: RemittanceAnalysis, weights: typeof WEIGHTS_
     tier = "Fair";
   }
 
+  // Ordered by deficit (max weight minus actual contribution) descending —
+  // the factor holding the score back the most comes first, which is the
+  // order an adverse-decision notice wants: "here's what to improve."
+  const reasons: ScoreReason[] = [
+    { ...consistencyReason, factor: "consistency", contribution: consistencyScore, maxContribution: weights.CONSISTENCY },
+    { ...frequencyReason, factor: "frequency", contribution: frequencyScore, maxContribution: weights.FREQUENCY },
+    { ...durationReason, factor: "duration", contribution: durationScore, maxContribution: weights.DURATION },
+    { ...volumeReason, factor: "volume", contribution: volumeScore, maxContribution: weights.VOLUME },
+  ].sort((a, b) => (b.maxContribution - b.contribution) - (a.maxContribution - a.contribution));
+
   return {
     score,
     breakdown: {
@@ -157,6 +254,7 @@ function scoreWithWeights(analysis: RemittanceAnalysis, weights: typeof WEIGHTS_
       volume: volumeScore,
     },
     tier,
+    reasons,
   };
 }
 
@@ -189,6 +287,7 @@ export function calculateCreditScore(analysis: RemittanceAnalysis): CreditScoreR
     modelVersion: currentModelConfig.activeVersion,
     breakdown: activeResult.breakdown,
     tier: activeResult.tier,
+    reasons: activeResult.reasons,
     shadowScore: shadowResult,
   };
 }

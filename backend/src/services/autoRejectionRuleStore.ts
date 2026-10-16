@@ -104,6 +104,25 @@ export async function applyAutoRejectionIfNeeded(
     return { autoRejected: false, evaluation };
   }
 
+  // A MIN_CREDIT_SCORE failure only has the bare score number
+  // (`evaluateRule` works off `ApplicantSnapshot`) — attach the stable
+  // reason codes behind *why* that score was low, from the applicant's most
+  // recent stored VerificationResult, so the rejection notice below can
+  // explain the decision rather than just citing a number.
+  if (evaluation.failures.some((f) => f.ruleType === "MIN_CREDIT_SCORE")) {
+    const latestResult = await prisma.verificationResult.findFirst({
+      where: { applicantId },
+      orderBy: { analyzedAt: "desc" },
+    });
+    if (latestResult?.scoreReasons) {
+      for (const failure of evaluation.failures) {
+        if (failure.ruleType === "MIN_CREDIT_SCORE") {
+          failure.scoreReasons = latestResult.scoreReasons;
+        }
+      }
+    }
+  }
+
   const reason = formatAutoRejectionReason(evaluation.failures);
   const now = new Date();
 
@@ -154,6 +173,7 @@ export async function applyAutoRejectionIfNeeded(
         failedRules: evaluation.failures.map((f) => ({
           ruleName: f.ruleName,
           reason: f.reason,
+          ...(f.scoreReasons ? { scoreReasons: f.scoreReasons } : {}),
         })),
       })
     );

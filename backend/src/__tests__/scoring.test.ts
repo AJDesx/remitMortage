@@ -117,4 +117,96 @@ describe("Credit Scoring Engine", () => {
     expect(result.score).toBe(0);
     expect(result.tier).toBe("Insufficient");
   });
+
+  it("Test 7: every score carries exactly one reason per factor, with code and text", () => {
+    const result = calculateCreditScore(baseAnalysis);
+    expect(result.reasons).toHaveLength(4);
+    const factors = result.reasons.map((r) => r.factor).sort();
+    expect(factors).toEqual(["consistency", "duration", "frequency", "volume"]);
+    for (const reason of result.reasons) {
+      expect(typeof reason.code).toBe("string");
+      expect(reason.code.length).toBeGreaterThan(0);
+      expect(typeof reason.text).toBe("string");
+      expect(reason.text.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("Test 8: a perfect score resolves to the 'fully met' code for every factor", () => {
+    // baseAnalysis hits the top tier of every factor (see Test 1).
+    const result = calculateCreditScore(baseAnalysis);
+    const codes = result.reasons.map((r) => r.code);
+    expect(codes).toContain("CONSISTENCY_HIGH");
+    expect(codes).toContain("FREQUENCY_REGULAR");
+    expect(codes).toContain("DURATION_ESTABLISHED");
+    expect(codes).toContain("VOLUME_SUBSTANTIAL");
+  });
+
+  it("Test 9: reason codes are stable — the full catalog never silently changes", () => {
+    // This is the contract the ticket cares about: once a code ships, its
+    // spelling is permanent. If this test ever needs to change, that change
+    // must be adding a *new* code, not renaming an existing one — any rename
+    // breaks reproducibility for every score already stored with it.
+    const STABLE_CODES = [
+      "CONSISTENCY_HIGH",
+      "CONSISTENCY_MODERATE",
+      "CONSISTENCY_LOW",
+      "FREQUENCY_REGULAR",
+      "FREQUENCY_OCCASIONAL",
+      "FREQUENCY_SPARSE",
+      "FREQUENCY_INSUFFICIENT",
+      "DURATION_ESTABLISHED",
+      "DURATION_MODERATE",
+      "DURATION_LIMITED",
+      "DURATION_INSUFFICIENT",
+      "VOLUME_SUBSTANTIAL",
+      "VOLUME_MODERATE",
+      "VOLUME_LOW",
+      "VOLUME_MINIMAL",
+      "INSUFFICIENT_HISTORY",
+    ];
+
+    // Fair-tier fixture (Test 3) exercises a mix of tiers in one call.
+    const fair = calculateCreditScore({
+      ...baseAnalysis,
+      totalPayments: 4,
+      spanMonths: 3,
+      totalAmountUSDC: "600",
+      averageAmountUSDC: "150",
+      standardDeviation: 75,
+    });
+    const excellent = calculateCreditScore(baseAnalysis);
+    const insufficient = calculateCreditScore({ ...baseAnalysis, totalPayments: 1 });
+
+    for (const result of [fair, excellent, insufficient]) {
+      for (const reason of result.reasons) {
+        expect(STABLE_CODES).toContain(reason.code);
+      }
+    }
+  });
+
+  it("Test 10: reasons are ordered by deficit, biggest shortfall first", () => {
+    // Same fixture as Test 3 (score 55): consistency 20/40 (deficit 20),
+    // duration 5/20 (deficit 15), volume 5/15 (deficit 10), frequency 25/25
+    // (deficit 0) — i.e. a genuine mix, not all-tied.
+    const result = calculateCreditScore({
+      ...baseAnalysis,
+      totalPayments: 4,
+      spanMonths: 3,
+      totalAmountUSDC: "600",
+      averageAmountUSDC: "150",
+      standardDeviation: 75,
+    });
+    expect(result.reasons.map((r) => r.factor)).toEqual([
+      "consistency",
+      "duration",
+      "volume",
+      "frequency",
+    ]);
+  });
+
+  it("Test 11: insufficient history still carries reasons, never an empty array", () => {
+    const result = calculateCreditScore({ ...baseAnalysis, totalPayments: 1 });
+    expect(result.reasons).toHaveLength(4);
+    expect(result.reasons.every((r) => r.code === "INSUFFICIENT_HISTORY")).toBe(true);
+  });
 });

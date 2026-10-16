@@ -171,6 +171,42 @@ adminRouter.get("/loans/:id/tax-id-matches", requireAdmin, async (req: Authentic
   }
 });
 
+// ── Verification Score Explainability (reviewer view) ────────────────────
+// The reason codes + plain-language text behind an applicant's most recent
+// credit score, exactly as stored on VerificationResult at scoring time —
+// reproducible without recomputing against (possibly since-changed)
+// scoring weights. Accepts either the applicant's id or stellarAddress.
+adminRouter.get("/applicants/:id/verification-score", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const applicantIdOrAddress = String(req.params.id);
+    const result = await prisma.verificationResult.findFirst({
+      where: {
+        applicant: {
+          OR: [{ id: applicantIdOrAddress }, { stellarAddress: applicantIdOrAddress }],
+        },
+      },
+      orderBy: { analyzedAt: "desc" },
+    });
+
+    if (!result) {
+      return res.status(404).json({ error: "not_found", message: "No verification result found for this applicant" });
+    }
+
+    return res.json({
+      applicantId: result.applicantId,
+      eligible: result.eligible,
+      score: result.score,
+      modelVersion: result.modelVersion,
+      breakdown: result.scoreBreakdown,
+      reasons: result.scoreReasons,
+      analyzedAt: result.analyzedAt,
+    });
+  } catch (error) {
+    logger.error("Verification score lookup error", { error });
+    return res.status(500).json({ error: "failed_to_load_verification_score" });
+  }
+});
+
 // ── Loan servicing transfer ──────────────────────────────────────────────
 
 adminRouter.post("/loans/:id/servicing-transfer", requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
