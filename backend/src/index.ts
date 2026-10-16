@@ -43,6 +43,8 @@ import { tenantRouter } from "./routes/tenant.js";
 import { getTrackedConnectionLimit } from "./services/dbPoolMetrics.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { incidentWebhookRouter } from "./routes/incidentWebhooks.js";
+import { chatOpsRouter } from "./routes/chatOpsCallbacks.js";
+import { entitlementsAdminRouter } from "./routes/entitlements.js";
 import { emailEventsRouter } from "./routes/emailEvents.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
 import { waitlistRouter } from "./routes/waitlist.js";
@@ -225,7 +227,15 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json());
+app.use(
+  express.json({
+    // Capture the raw body so signature-verified webhooks (Slack/Teams
+    // ChatOps acknowledgements, issue #860) can validate the exact bytes.
+    verify: (req, _res, buf) => {
+      (req as unknown as { rawBody?: string }).rawBody = buf.toString("utf8");
+    },
+  })
+);
 app.use(logMasker);
 app.use(cookieParser());
 
@@ -288,6 +298,7 @@ app.use("/api/tenant", tenantRouter);
 app.use("/api/admin", authMiddleware, readYourWritesMiddleware, adminRouter);
 app.use("/api/admin", authMiddleware, readYourWritesMiddleware, feeWaiverAdminRouter);
 app.use("/api/admin", authMiddleware, readYourWritesMiddleware, rateSheetAdminRouter);
+app.use("/api/admin", authMiddleware, readYourWritesMiddleware, entitlementsAdminRouter);
 app.use("/api/admin", adminAuthRouter);
 // Bare (no outer authMiddleware): impersonation/start and /end authenticate
 // via the admin's own token through requireAdmin regardless of whether an
@@ -300,6 +311,7 @@ app.use("/api/admin/api-keys", apiKeysRouter);
 app.use("/api/exports", exportsRouter);
 app.use("/api/keys", apiKeyUsageRouter);
 app.use("/api/webhooks/pagerduty", incidentWebhookRouter);
+app.use("/api/webhooks/chatops", chatOpsRouter);
 app.use("/api/webhooks/email-events", emailEventsRouter);
 app.use("/api/webhooks", authMiddleware, webhooksRouter);
 app.use("/api/user", userRouter);

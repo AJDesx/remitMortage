@@ -6,6 +6,7 @@ import { requireAdmin, authMiddleware, AuthenticatedRequest } from "../middlewar
 import { prisma } from "../services/db.js";
 import logger from "../utils/logger.js";
 import { exportAuditLogToSiem, SIEM_MAX_WINDOW_DAYS } from "../services/auditSiemExport.js";
+import { verifyAuditRange } from "../services/auditChain.js";
 
 export const auditRouter = Router();
 
@@ -112,6 +113,37 @@ auditRouter.get("/", requireAdmin, async (req, res) => {
   } catch (error) {
     console.error("Audit query error:", error);
     return res.status(500).json({ error: "Failed to query audit logs" });
+  }
+});
+
+/**
+ * GET /api/audit-logs/verify
+ *
+ * Recomputes the tamper-evident hash chain (issue #861) over an optional
+ * time range and reports whether the entries link up and match their stored
+ * hashes. Returns 409 when the chain is broken so a monitoring check can alert
+ * on it. Admin-only.
+ */
+auditRouter.get("/verify", requireAdmin, async (req, res) => {
+  try {
+    const parse = (value: unknown): Date | undefined => {
+      if (typeof value !== "string" || !value) return undefined;
+      const date = new Date(value);
+      return isNaN(date.getTime()) ? undefined : date;
+    };
+    const from = parse(req.query.from);
+    const to = parse(req.query.to);
+
+    const result = await verifyAuditRange({ from, to });
+    return res.status(result.ok ? 200 : 409).json({
+      ok: result.ok,
+      verified: result.verified,
+      head: result.head,
+      ...(result.brokenAt ? { brokenAt: result.brokenAt } : {}),
+    });
+  } catch (error) {
+    logger.error("Audit chain verification failed", { error });
+    return res.status(500).json({ error: "Failed to verify audit chain" });
   }
 });
 
