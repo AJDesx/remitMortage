@@ -150,6 +150,20 @@ function captureBufferForOcr(
  *     responses:
  *       201:
  *         description: Document encrypted and stored; OCR result included.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               required: [documentId, uploadedAt, scanStatus, ocr]
+ *               properties:
+ *                 documentId: { type: string }
+ *                 uploadedAt: { type: string, format: date-time }
+ *                 scanStatus: { type: string, enum: [clean] }
+ *                 ocr:
+ *                   type: object
+ *                   required: [ocrFailed]
+ *                   properties:
+ *                     ocrFailed: { type: boolean }
  *       400:
  *         description: Missing file, oversized file, or unsupported file type.
  *       403:
