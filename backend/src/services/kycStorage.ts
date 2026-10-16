@@ -11,6 +11,7 @@ export interface KycDocumentRecord {
   applicantAddress: string;
   documentType: string;
   status: KycDocumentStatus;
+  scanStatus: "clean";
   reviewMessage?: string;
   originalName: string;
   mimeType: string;
@@ -25,6 +26,7 @@ export interface ApplicantKycDocument {
   applicantAddress: string;
   documentType: string;
   status: KycDocumentStatus;
+  scanStatus: "clean";
   originalName: string;
   mimeType: string;
   uploadedAt: string;
@@ -65,6 +67,7 @@ export async function storeEncryptedDocument(
     applicantAddress,
     documentType,
     status: "Uploaded",
+    scanStatus: "clean",
     originalName,
     mimeType,
     uploadedAt: new Date().toISOString(),
@@ -96,6 +99,7 @@ export async function listApplicantDocuments(
         applicantAddress: record.applicantAddress,
         documentType: record.documentType ?? "identity",
         status: record.status ?? "Uploaded",
+        scanStatus: record.scanStatus ?? "clean",
         originalName: record.originalName,
         mimeType: record.mimeType,
         uploadedAt: record.uploadedAt,
@@ -143,6 +147,7 @@ export async function listAllApplicantDocuments(): Promise<ApplicantKycDocument[
           applicantAddress: record.applicantAddress,
           documentType: record.documentType ?? "identity",
           status: record.status ?? "Uploaded",
+          scanStatus: record.scanStatus ?? "clean",
           originalName: record.originalName,
           mimeType: record.mimeType,
           uploadedAt: record.uploadedAt,
