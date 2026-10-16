@@ -65,7 +65,7 @@ export async function runStaleDraftCleanupJob(): Promise<StaleDraftCleanupSummar
 
     await prisma.loanApplication.update({
       where: { id: draft.id },
-      data: { draftStaleNotifiedAt: now },
+      data: { draftStaleNotifiedAt: now, version: { increment: 1 } },
     });
     flaggedCount++;
   }
@@ -77,7 +77,7 @@ export async function runStaleDraftCleanupJob(): Promise<StaleDraftCleanupSummar
       deletedAt: null,
       draftStaleNotifiedAt: { lt: expiryCutoff },
     },
-    data: { deletedAt: now },
+    data: { deletedAt: now, version: { increment: 1 } },
   });
 
   logger.info("[StaleDraftCleanup] Completed stale draft scan", {

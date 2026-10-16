@@ -9,6 +9,13 @@ export interface KanbanLoan {
   verificationScore: number;
   status: string;
   daysInStatus: number;
+  /**
+   * Optimistic-lock token from the backend loan record (issue #846).
+   * Echoed back as `expectedVersion` on decision requests so a loan that
+   * changed since this screen loaded is rejected with a 409 instead of
+   * silently overwriting the concurrent decision.
+   */
+  version?: number;
 }
 
 interface KanbanBoardProps {

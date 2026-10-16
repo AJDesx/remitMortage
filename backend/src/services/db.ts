@@ -837,7 +837,7 @@ export async function processUserDataDeletion(stellarAddress: string, reason?: s
 
     await prisma.loanApplication.updateMany({
       where: { applicantId: applicant.id },
-      data: { deletedAt: new Date() },
+      data: { deletedAt: new Date(), version: { increment: 1 } },
     });
     anonymizedFields.push("loanApplications");
 

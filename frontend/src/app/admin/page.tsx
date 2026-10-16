@@ -166,6 +166,9 @@ function AdminDashboard() {
             verificationScore: Number(loan.verificationScore ?? 0),
             status: mappedStatus,
             daysInStatus,
+            // Optimistic-lock token (issue #846): kept so decision requests
+            // can echo back the version this screen actually rendered.
+            version: typeof loan.version === "number" ? loan.version : undefined,
           };
         }));
       } else {
@@ -228,8 +231,13 @@ function AdminDashboard() {
         const response = await fetch(`/api/loan/${pendingAction.loan.id}/approve`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({}),
+          // Optimistic lock (issue #846): echo the version we rendered so a
+          // concurrent decision on this loan can never be overwritten.
+          body: JSON.stringify({ expectedVersion: pendingAction.loan.version }),
         });
+        if (response.status === 409) {
+          throw new Error("This loan changed since it was loaded — refresh and review it again.");
+        }
         if (!response.ok) throw new Error("Loan approval failed.");
       }
 
