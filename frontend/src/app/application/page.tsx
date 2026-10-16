@@ -9,6 +9,7 @@ import { useWallet, OptionalWalletProvider } from "@/context/WalletContext";
 import { EmptyState } from "@/components/EmptyState";
 import HelpLink from "@/components/help/HelpLink";
 import { track } from "@/lib/analytics";
+import { announce } from "@/lib/announcer";
 
 const Navbar = dynamic(() => import("@/components/Navbar"), { ssr: false });
 
@@ -52,9 +53,12 @@ function ApplicationPageInner() {
       setApplications((current) => [data, ...current]);
       setAmount("");
       setMessage("Application submitted for underwriting review.");
+      announce("Loan application submitted for underwriting review.");
       track("loan_application_submitted");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Application failed");
+      const failure = error instanceof Error ? error.message : "Application failed";
+      setMessage(failure);
+      announce(`Loan application failed. ${failure}`, { priority: "assertive" });
     } finally {
       setLoading(false);
     }
@@ -118,7 +122,7 @@ function ApplicationPageInner() {
               </form>
             )}
             {message && (
-              <div data-testid="loan-submit-status" className="rm-inline-message" role="status">
+              <div data-testid="loan-submit-status" className="rm-inline-message">
                 {message}
               </div>
             )}

@@ -4,7 +4,7 @@
 
 export const dynamic = "force-dynamic";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import loadDynamic from "next/dynamic";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
@@ -42,6 +42,7 @@ import { SortableWidget } from '../../components/dashboard/SortableWidget';
 import { WidgetSettingsModal } from '../../components/dashboard/WidgetSettingsModal';
 import { useAutoRefresh } from '../../hooks/useAutoRefresh';
 import { track } from "../../lib/analytics";
+import { announce } from "../../lib/announcer";
 
 
 const Navbar = loadDynamic(() => import("../../components/Navbar"), { ssr: false });
@@ -392,6 +393,8 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const refreshFailedRef = useRef(false);
+
   const loadStatus = useCallback(
     async ({ background = false }: { background?: boolean } = {}) => {
       if (!publicKey) return;
@@ -405,6 +408,12 @@ export default function DashboardPage() {
         const data = await res.json();
         setStatus(data);
         setError(null);
+        // Background polls are silent unless they recover from a failure, so
+        // screen-reader users are not told "refreshed" every interval.
+        if (background && refreshFailedRef.current) {
+          announce("Dashboard data refreshed.");
+        }
+        refreshFailedRef.current = false;
         setMilestones(SAMPLE_MILESTONES);
         const missed = data.loan?.missedPayments ?? 0;
         setRecoveryPlan(
@@ -416,7 +425,17 @@ export default function DashboardPage() {
         );
       } catch (e: any) {
         // A failed background poll keeps the last good data on screen.
-        if (!background) setError(e?.message || "Failed to load borrower status");
+        const failure = e?.message || "Failed to load borrower status";
+        if (!background) setError(failure);
+        if (!background || !refreshFailedRef.current) {
+          announce(
+            background
+              ? "Dashboard refresh failed. Showing the last loaded data."
+              : `Failed to load dashboard. ${failure}`,
+            { priority: "assertive" }
+          );
+        }
+        refreshFailedRef.current = true;
       } finally {
         if (!background) setLoading(false);
       }

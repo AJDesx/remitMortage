@@ -18,6 +18,7 @@ import { HotToaster } from "@/components/HotToaster";
 import WalletBanner from "@/components/WalletBanner";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import SkipToContent from "@/components/SkipToContent";
+import { LiveRegionAnnouncer } from "@/components/LiveRegionAnnouncer";
 import Footer from "@/components/Footer";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
@@ -125,6 +126,7 @@ export default async function RootLayout({
       </head>
       <body className="min-h-screen bg-[#060913] text-slate-100 font-sans antialiased flex flex-col justify-between">
         <SkipToContent />
+        <LiveRegionAnnouncer />
         <NextIntlClientProvider messages={messages} locale={locale}>
           <ImpersonationBanner />
           <WalletBanner />

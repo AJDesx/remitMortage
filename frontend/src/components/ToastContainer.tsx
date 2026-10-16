@@ -90,8 +90,9 @@ function ToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: 
 
   return (
     <div
-      role="alert"
-      aria-live="polite"
+      role="group"
+      aria-label={title}
+      data-announced-by="live-region"
       className="animate-toast-in pointer-events-auto relative w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-[var(--radius-md)] border border-[var(--border-color)] bg-[var(--bg-card)] shadow-[var(--shadow-card)]"
       style={{ borderLeft: `3px solid ${color}` }}
       onMouseEnter={() => setPaused(true)}

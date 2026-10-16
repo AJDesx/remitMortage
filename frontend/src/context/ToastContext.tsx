@@ -2,6 +2,7 @@
 // Copyright (c) 2026 RemitMortgage Protocol Contributors
 // SPDX-License-Identifier: MIT
 
+import { announceToast } from "@/lib/announcer";
 import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 
 export type ToastVariant = "info" | "success" | "warning" | "error";
@@ -62,6 +63,8 @@ export function ToastProvider({
         message: input.message,
         duration: input.duration ?? resolvedDefault,
       };
+
+      announceToast(msg.variant, msg.title, msg.message);
 
       setToasts((prev) => {
         const withoutDup = prev.filter((t) => t.id !== id);
