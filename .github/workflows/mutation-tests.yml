@@ -8,6 +8,9 @@ on:
   schedule:
     - cron: '0 0 * * 0' # Run weekly
 
+permissions:
+  contents: read
+
 concurrency:
   group: mutation-tests-${{ github.ref }}
   cancel-in-progress: true

@@ -22,6 +22,9 @@ on:
           - staging
           - production
 
+permissions:
+  contents: read
+
 env:
   TF_IN_AUTOMATION: "true"
   # Prevents interactive prompts in any terraform sub-command
@@ -32,6 +35,9 @@ jobs:
   drift-main:
     name: Drift Check — ${{ matrix.environment }} (devops/)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     # Run all three unless the caller pinned a specific environment
     if: >
       github.event_name == 'schedule' ||
@@ -163,6 +169,9 @@ jobs:
   drift-multiregion:
     name: Drift Check — multi-region (devops/terraform/)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     if: >
       github.event_name == 'schedule' ||
       github.event.inputs.environment == '' ||

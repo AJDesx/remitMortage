@@ -16,6 +16,9 @@ on:
       - 'scripts/verify-backup-restore.sh'
       - 'backend/prisma/schema.prisma'
 
+permissions:
+  contents: read
+
 jobs:
   verify-restore:
     name: Restore Drill (Sandbox Postgres)

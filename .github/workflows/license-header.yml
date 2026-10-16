@@ -12,6 +12,9 @@ on:
   pull_request:
     branches: [ main, development ]
 
+permissions:
+  contents: read
+
 concurrency:
   group: license-header-${{ github.ref }}
   cancel-in-progress: true

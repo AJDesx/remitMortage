@@ -30,6 +30,9 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   drift-check:
     name: Prisma Drift — schema vs production snapshot

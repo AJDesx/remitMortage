@@ -36,6 +36,9 @@ on:
       - "frontend/e2e/milestone-lifecycle.spec.ts"
       - ".github/workflows/e2e-milestone-disbursement.yml"
 
+permissions:
+  contents: read
+
 concurrency:
   group: e2e-milestone-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
