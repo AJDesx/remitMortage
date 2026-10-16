@@ -60,7 +60,7 @@ export default function HelpCenterPage() {
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search articles… e.g. &quot;payout setup&quot; or &quot;rejected application&quot;"
+              placeholder='Search articles… e.g. "payout setup" or "rejected application"'
               className="w-full bg-[#0b0f1d] border border-slate-700 rounded-xl pl-12 pr-4 py-3.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-500 transition-colors"
               autoComplete="off"
             />

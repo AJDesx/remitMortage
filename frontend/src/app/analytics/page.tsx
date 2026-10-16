@@ -22,10 +22,9 @@ import ChartExportControls from "@/components/charts/ChartExportControls";
 import type { ChartExportData, ChartSeries } from "@/lib/chart-export";
 
 const Navbar = dynamic(() => import("../../components/Navbar"), { ssr: false });
-const RateBenchmarkWidget = dynamic(
-  () => import("../../components/RateBenchmarkWidget"),
-  { ssr: false }
-);
+const RateBenchmarkWidget = dynamic(() => import("../../components/RateBenchmarkWidget"), {
+  ssr: false,
+});
 
 // ── Animated Counter Component ──────────────────────────────────────────
 function AnimatedCounter({
@@ -420,7 +419,9 @@ export default function AnalyticsPage() {
               <div className="glass-card p-6 flex flex-col justify-between">
                 <div className="mb-2 flex items-start justify-between gap-4">
                   <div>
-                    <h3 className="text-lg font-bold text-[var(--text-primary)]">Loan Performance</h3>
+                    <h3 className="text-lg font-bold text-[var(--text-primary)]">
+                      Loan Performance
+                    </h3>
                     <p className="text-xs text-[var(--text-secondary)]">
                       Distribution of active, repaid, and defaulted loans
                     </p>

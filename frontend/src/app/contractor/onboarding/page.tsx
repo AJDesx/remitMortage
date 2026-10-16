@@ -50,6 +50,8 @@ function ContractorOnboardingInner() {
   const [state, setState] = useState<OnboardingState | null>(null);
 
   useEffect(() => {
+    // Hydrate from localStorage after mount — storage is unavailable during SSR.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setState(loadState());
   }, []);
 
@@ -86,7 +88,8 @@ function ContractorOnboardingInner() {
           notify({
             variant: "success",
             title: "Ready for review",
-            message: "All of your onboarding steps are complete. An admin will finish the final review shortly.",
+            message:
+              "All of your onboarding steps are complete. An admin will finish the final review shortly.",
           });
         }
 
@@ -97,7 +100,9 @@ function ContractorOnboardingInner() {
   );
 
   const isAdmin =
-    !!publicKey && !!getAdminAddress() && publicKey.toLowerCase() === getAdminAddress().toLowerCase();
+    !!publicKey &&
+    !!getAdminAddress() &&
+    publicKey.toLowerCase() === getAdminAddress().toLowerCase();
 
   return (
     <main

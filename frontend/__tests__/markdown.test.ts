@@ -15,7 +15,9 @@ describe("renderMarkdown", () => {
   });
 
   it("renders ordered lists", () => {
-    expect(renderMarkdown("1. first\n2. second")).toContain("<ol><li>first</li><li>second</li></ol>");
+    expect(renderMarkdown("1. first\n2. second")).toContain(
+      "<ol><li>first</li><li>second</li></ol>"
+    );
   });
 
   it("renders bold, inline code and fenced code blocks", () => {
@@ -27,7 +29,9 @@ describe("renderMarkdown", () => {
 
   it("allows safe links and neutralizes unsafe ones", () => {
     const html = renderMarkdown("[docs](https://example.com) [bad](javascript:alert(1))");
-    expect(html).toContain('<a href="https://example.com" rel="noopener noreferrer" target="_blank">docs</a>');
+    expect(html).toContain(
+      '<a href="https://example.com" rel="noopener noreferrer" target="_blank">docs</a>'
+    );
     expect(html).toContain('<a href="#">bad</a>');
     expect(html).not.toContain("javascript:");
   });

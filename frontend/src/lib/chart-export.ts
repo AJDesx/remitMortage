@@ -111,7 +111,10 @@ export async function exportChartPng(options: ChartPngExportOptions): Promise<vo
   }
 
   const rect = svg.getBoundingClientRect();
-  const chartWidth = Math.max(rect.width || Number(svg.getAttribute("width")) || MIN_CHART_WIDTH, MIN_CHART_WIDTH);
+  const chartWidth = Math.max(
+    rect.width || Number(svg.getAttribute("width")) || MIN_CHART_WIDTH,
+    MIN_CHART_WIDTH
+  );
   const chartHeight = Math.max(
     rect.height || Number(svg.getAttribute("height")) || MIN_CHART_HEIGHT,
     MIN_CHART_HEIGHT

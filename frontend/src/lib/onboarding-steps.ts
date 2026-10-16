@@ -12,11 +12,7 @@
  */
 
 export type OnboardingStepStatus =
-  | "not_started"
-  | "in_progress"
-  | "pending_review"
-  | "approved"
-  | "rejected";
+  "not_started" | "in_progress" | "pending_review" | "approved" | "rejected";
 
 /** Who acts next on a step. */
 export type OnboardingStepOwner = "contractor" | "admin";
@@ -47,10 +43,7 @@ export interface OnboardingState {
 
 /** Overall checklist state derived from the individual step statuses. */
 export type OnboardingOverallStatus =
-  | "in_progress"
-  | "action_required"
-  | "ready_for_review"
-  | "complete";
+  "in_progress" | "action_required" | "ready_for_review" | "complete";
 
 export const ONBOARDING_STEP_IDS = [
   "profile",
@@ -108,8 +101,7 @@ export function defaultOnboardingState(now: string = new Date().toISOString()): 
       {
         id: "license",
         title: "Verify your contractor license",
-        description:
-          "License number and issuing authority, validated against the public register.",
+        description: "License number and issuing authority, validated against the public register.",
         owner: "contractor",
         expectedTurnaround: "2–3 business days for review",
         status: "not_started",
@@ -136,8 +128,7 @@ export function defaultOnboardingState(now: string = new Date().toISOString()): 
       {
         id: "admin-review",
         title: "Admin review and approval",
-        description:
-          "A protocol admin reviews your profile, documents, license, and payout setup.",
+        description: "A protocol admin reviews your profile, documents, license, and payout setup.",
         owner: "admin",
         expectedTurnaround: "3–5 business days",
         status: "not_started",

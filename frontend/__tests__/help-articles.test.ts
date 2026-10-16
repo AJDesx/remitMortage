@@ -34,7 +34,9 @@ describe("searchArticles ranking", () => {
     const results = searchArticles("verification");
     expect(results[0].article.slug).toBe("verification-requirements");
 
-    const verificationIndex = results.findIndex((r) => r.article.slug === "verification-requirements");
+    const verificationIndex = results.findIndex(
+      (r) => r.article.slug === "verification-requirements"
+    );
     const bodyOnlyIndex = results.findIndex((r) => r.article.slug === "repayments-and-statements");
     if (bodyOnlyIndex !== -1) {
       expect(verificationIndex).toBeLessThan(bodyOnlyIndex);

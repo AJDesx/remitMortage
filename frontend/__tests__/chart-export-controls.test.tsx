@@ -121,9 +121,7 @@ describe("ChartExportControls", () => {
     renderControls();
     fireEvent.click(screen.getByRole("button", { name: /export .* as png/i }));
 
-    await waitFor(() =>
-      expect(screen.getByRole("status")).toHaveTextContent(/export failed/i)
-    );
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/export failed/i));
     expect(downloadTextFile).not.toHaveBeenCalled();
   });
 });

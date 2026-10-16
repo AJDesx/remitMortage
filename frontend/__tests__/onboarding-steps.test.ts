@@ -8,6 +8,7 @@ import {
   getOverallStatus,
   getOverallSummary,
   type OnboardingState,
+  type OnboardingStepStatus,
 } from "../src/lib/onboarding-steps";
 
 function stateWithStatuses(
@@ -17,7 +18,7 @@ function stateWithStatuses(
   const base = defaultOnboardingState(now);
   return {
     steps: base.steps.map((step) =>
-      statuses[step.id] ? { ...step, status: statuses[step.id] as any } : step
+      statuses[step.id] ? { ...step, status: statuses[step.id] as OnboardingStepStatus } : step
     ),
   };
 }
@@ -73,9 +74,9 @@ describe("getOverallStatus", () => {
   });
 
   it("flags action required when one step is rejected", () => {
-    expect(
-      getOverallStatus(stateWithStatuses({ ...CONTRACTOR_DONE, documents: "rejected" }))
-    ).toBe("action_required");
+    expect(getOverallStatus(stateWithStatuses({ ...CONTRACTOR_DONE, documents: "rejected" }))).toBe(
+      "action_required"
+    );
   });
 
   it("handles a mixed state: one pending, one rejected, others approved", () => {

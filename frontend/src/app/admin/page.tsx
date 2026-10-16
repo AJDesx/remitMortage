@@ -19,6 +19,7 @@ import AuditLogViewer from "../../components/AuditLogViewer";
 import ApplicantCommunicationTimeline from "../../components/ApplicantCommunicationTimeline";
 import LoanCommentsPanel from "../../components/LoanCommentsPanel";
 import { LoanKanbanBoard, KanbanLoan } from "../../components/LoanKanbanBoard";
+import LoanQueueTable from "../../components/admin/LoanQueueTable";
 
 // The admin wallet authorized to approve loans and milestones. Configured via
 // NEXT_PUBLIC_ADMIN_ADDRESS at build time.
@@ -152,23 +153,27 @@ function AdminDashboard() {
       const pendingResponse = await fetch("/api/loan/pending");
       if (pendingResponse.ok) {
         const pending = await pendingResponse.json();
-        setLoans((Array.isArray(pending) ? pending : []).map((loan: any) => {
-          let mappedStatus = "submitted";
-          if (loan.status === "Approved") mappedStatus = "approved";
-          else if (loan.status === "Disbursing") mappedStatus = "disbursing";
-          else if (loan.status === "MANUAL_REVIEW") mappedStatus = "underwriting";
-          
-          const daysInStatus = loan.updatedAt ? Math.floor((Date.now() - new Date(loan.updatedAt).getTime()) / 86400000) : 0;
-          
-          return {
-            id: loan.id,
-            borrower: loan.borrowerAddress,
-            principal: Number(loan.amount),
-            verificationScore: Number(loan.verificationScore ?? 0),
-            status: mappedStatus,
-            daysInStatus,
-          };
-        }));
+        setLoans(
+          (Array.isArray(pending) ? pending : []).map((loan: any) => {
+            let mappedStatus = "submitted";
+            if (loan.status === "Approved") mappedStatus = "approved";
+            else if (loan.status === "Disbursing") mappedStatus = "disbursing";
+            else if (loan.status === "MANUAL_REVIEW") mappedStatus = "underwriting";
+
+            const daysInStatus = loan.updatedAt
+              ? Math.floor((Date.now() - new Date(loan.updatedAt).getTime()) / 86400000)
+              : 0;
+
+            return {
+              id: loan.id,
+              borrower: loan.borrowerAddress,
+              principal: Number(loan.amount),
+              verificationScore: Number(loan.verificationScore ?? 0),
+              status: mappedStatus,
+              daysInStatus,
+            };
+          })
+        );
       } else {
         setLoans([]);
       }
@@ -385,7 +390,9 @@ function ViewAsUserPanel({ isReadOnly }: { isReadOnly: boolean }) {
       setTargetWallet("");
       setReason("");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to start impersonation session.");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to start impersonation session."
+      );
     } finally {
       setStarting(false);
     }
@@ -405,9 +412,15 @@ function ViewAsUserPanel({ isReadOnly }: { isReadOnly: boolean }) {
       <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-[var(--text-primary)]">
         View as user (read-only support session)
       </summary>
-      <form onSubmit={handleStart} className="flex flex-col gap-3 px-4 pb-4 md:flex-row md:items-end">
+      <form
+        onSubmit={handleStart}
+        className="flex flex-col gap-3 px-4 pb-4 md:flex-row md:items-end"
+      >
         <div className="flex-1">
-          <label htmlFor="impersonate-wallet" className="block text-xs text-[var(--text-muted)] mb-1">
+          <label
+            htmlFor="impersonate-wallet"
+            className="block text-xs text-[var(--text-muted)] mb-1"
+          >
             User wallet address
           </label>
           <input
@@ -420,7 +433,10 @@ function ViewAsUserPanel({ isReadOnly }: { isReadOnly: boolean }) {
           />
         </div>
         <div className="flex-1">
-          <label htmlFor="impersonate-reason" className="block text-xs text-[var(--text-muted)] mb-1">
+          <label
+            htmlFor="impersonate-reason"
+            className="block text-xs text-[var(--text-muted)] mb-1"
+          >
             Reason (optional, for the audit log)
           </label>
           <input
@@ -501,7 +517,7 @@ function PendingLoansTab({
 }) {
   const { publicKey } = useWallet();
   const [expandedLoanId, setExpandedLoanId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"list" | "kanban">("kanban");
+  const [viewMode, setViewMode] = useState<"list" | "kanban" | "table">("kanban");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [summaryItems, setSummaryItems] = useState<BulkResultItem[] | null>(null);
@@ -664,6 +680,12 @@ function PendingLoansTab({
             >
               List
             </button>
+            <button
+              onClick={() => setViewMode("table")}
+              className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${viewMode === "table" ? "bg-cyan-500 text-slate-900" : "text-slate-400 hover:text-slate-200"}`}
+            >
+              Table
+            </button>
           </div>
         </div>
         {selectedIds.size > 0 && (
@@ -674,10 +696,10 @@ function PendingLoansTab({
       </div>
 
       {viewMode === "kanban" ? (
-        <LoanKanbanBoard 
-          loans={loans} 
+        <LoanKanbanBoard
+          loans={loans}
           onStatusChange={async (loanId, newStatus) => {
-            const loan = loans.find(l => l.id === loanId);
+            const loan = loans.find((l) => l.id === loanId);
             if (!loan) return;
             // Respect existing status-change API rules by calling the bulk-review or approve/reject handles
             if (newStatus === "approved") {
@@ -689,71 +711,80 @@ function PendingLoansTab({
               // Currently we'll just trigger a refresh
               onRefresh();
             }
-          }} 
+          }}
+        />
+      ) : viewMode === "table" ? (
+        <LoanQueueTable
+          loans={loans}
+          onApprove={onApprove}
+          onReject={onReject}
+          userId={publicKey}
         />
       ) : (
         <>
           {loans.map((loan) => {
             const isSelected = selectedIds.has(loan.id);
-        return (
-          <div
-            key={loan.id}
-            className={`p-4 bg-[var(--bg-card)] rounded-lg border transition-colors ${
-              isSelected ? "border-[var(--accent-primary)] bg-[var(--accent-primary)]/5" : "border-[var(--border-color)]"
-            }`}
-          >
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
-                <input
-                  type="checkbox"
-                  id={`select-loan-${loan.id}`}
-                  checked={isSelected}
-                  onChange={() => toggleSelectLoan(loan.id)}
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-sky-500 focus:ring-sky-500 mr-2"
-                />
-                <div>
-                  <p className="text-xs text-[var(--text-muted)]">Borrower</p>
-                  <p className="text-sm font-mono">{shortenAddress(loan.borrower)}</p>
+            return (
+              <div
+                key={loan.id}
+                className={`p-4 bg-[var(--bg-card)] rounded-lg border transition-colors ${
+                  isSelected
+                    ? "border-[var(--accent-primary)] bg-[var(--accent-primary)]/5"
+                    : "border-[var(--border-color)]"
+                }`}
+              >
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+                    <input
+                      type="checkbox"
+                      id={`select-loan-${loan.id}`}
+                      checked={isSelected}
+                      onChange={() => toggleSelectLoan(loan.id)}
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-sky-500 focus:ring-sky-500 mr-2"
+                    />
+                    <div>
+                      <p className="text-xs text-[var(--text-muted)]">Borrower</p>
+                      <p className="text-sm font-mono">{shortenAddress(loan.borrower)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-[var(--text-muted)]">Principal</p>
+                      <p className="text-sm font-semibold">{formatUsdc(loan.principal)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-[var(--text-muted)]">Verification Score</p>
+                      <p className="text-sm font-semibold">
+                        <ScoreBadge score={loan.verificationScore} />
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      onClick={() => setExpandedLoanId(expandedLoanId === loan.id ? null : loan.id)}
+                      className="px-3 py-2 rounded-lg text-sm font-medium bg-sky-500/10 text-sky-400 border border-sky-500/30 hover:bg-sky-500/20 transition-colors"
+                    >
+                      {expandedLoanId === loan.id ? "Hide Discussion" : "Discuss"}
+                    </button>
+                    <button
+                      data-testid={`admin-approve-${loan.id}`}
+                      onClick={() => onApprove(loan)}
+                      className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => onReject(loan)}
+                      className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors"
+                    >
+                      Reject
+                    </button>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-xs text-[var(--text-muted)]">Principal</p>
-                  <p className="text-sm font-semibold">{formatUsdc(loan.principal)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-[var(--text-muted)]">Verification Score</p>
-                  <p className="text-sm font-semibold">
-                    <ScoreBadge score={loan.verificationScore} />
-                  </p>
-                </div>
+                {expandedLoanId === loan.id && publicKey && (
+                  <LoanCommentsPanel loanApplicationId={loan.id} currentUserAddress={publicKey} />
+                )}
               </div>
-              <div className="flex gap-2 shrink-0">
-                <button
-                  onClick={() => setExpandedLoanId(expandedLoanId === loan.id ? null : loan.id)}
-                  className="px-3 py-2 rounded-lg text-sm font-medium bg-sky-500/10 text-sky-400 border border-sky-500/30 hover:bg-sky-500/20 transition-colors"
-                >
-                  {expandedLoanId === loan.id ? "Hide Discussion" : "Discuss"}
-                </button>
-                <button
-                  data-testid={`admin-approve-${loan.id}`}
-                  onClick={() => onApprove(loan)}
-                  className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-colors"
-                >
-                  Approve
-                </button>
-                <button
-                  onClick={() => onReject(loan)}
-                  className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors"
-                >
-                  Reject
-                </button>
-              </div>
-            </div>
-            {expandedLoanId === loan.id && publicKey && (
-              <LoanCommentsPanel loanApplicationId={loan.id} currentUserAddress={publicKey} />
-            )}
-          </div>
-        );
-      })}
+            );
+          })}
         </>
       )}
 
@@ -800,7 +831,8 @@ function PendingLoansTab({
           <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-6 max-w-md w-full space-y-4">
             <h3 className="text-lg font-bold text-white">Bulk Reassign Loans</h3>
             <p className="text-xs text-[var(--text-muted)]">
-              Enter the reviewer wallet or address to assign the selected {selectedIds.size} loan application(s) to:
+              Enter the reviewer wallet or address to assign the selected {selectedIds.size} loan
+              application(s) to:
             </p>
             <input
               type="text"
@@ -849,7 +881,9 @@ function PendingLoansTab({
                       : "bg-red-500/10 border-red-500/30 text-red-300"
                   }`}
                 >
-                  <span className="font-mono font-medium">App ID: {item.applicationId.slice(0, 12)}...</span>
+                  <span className="font-mono font-medium">
+                    App ID: {item.applicationId.slice(0, 12)}...
+                  </span>
                   <div className="text-right">
                     <span className="font-bold block">{item.status}</span>
                     <span className="opacity-80 text-[11px]">{item.message}</span>

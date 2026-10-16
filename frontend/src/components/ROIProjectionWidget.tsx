@@ -76,7 +76,7 @@ export default function ROIProjectionWidget({
 
   const chartData = useMemo(() => {
     if (historicalData.length === 0) return [];
-    
+
     // Base data with principal added to yield
     const data: ChartDataPoint[] = historicalData.map((d) => ({
       date: d.date,
@@ -86,14 +86,14 @@ export default function ROIProjectionWidget({
 
     // The last point of historical data is the current month
     const lastData = data[data.length - 1];
-    
+
     // Connect the historical to projected
     const currentPrincipal = lastData.historicalValue as number;
     lastData.projectedValue = currentPrincipal;
 
     // Generate projections
     const rate = apyBps / 10000;
-    
+
     // Project `projectionMonths` months into the future (slider-controlled).
     let projectedBalance = currentPrincipal;
     const [yearStr, monthStr] = lastData.date.split("-");
@@ -106,12 +106,12 @@ export default function ROIProjectionWidget({
         currentMonth = 1;
         currentYear++;
       }
-      
+
       const dateStr = `${currentYear}-${String(currentMonth).padStart(2, "0")}`;
-      
+
       // Compounding monthly: A = P(1 + r/12)^n
       projectedBalance = projectedBalance * (1 + rate / 12);
-      
+
       data.push({
         date: dateStr,
         historicalValue: null,
@@ -171,7 +171,7 @@ export default function ROIProjectionWidget({
         <div>
           <h2 className="text-lg font-bold text-white mb-1">Portfolio ROI Projection</h2>
           <p className="text-xs text-slate-400">
-            Compounding projections based on your active {((apyBps) / 100).toFixed(1)}% APY.
+            Compounding projections based on your active {(apyBps / 100).toFixed(1)}% APY.
           </p>
         </div>
 
@@ -204,7 +204,10 @@ export default function ROIProjectionWidget({
       </div>
 
       <div className="flex items-center gap-4 mb-6">
-        <label htmlFor="projection-months" className="text-xs font-semibold text-slate-300 whitespace-nowrap">
+        <label
+          htmlFor="projection-months"
+          className="text-xs font-semibold text-slate-300 whitespace-nowrap"
+        >
           Repayment Timeline
         </label>
         <input
@@ -246,45 +249,49 @@ export default function ROIProjectionWidget({
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-              <XAxis 
-                dataKey="date" 
-                stroke="#64748b" 
-                fontSize={12} 
+              <XAxis
+                dataKey="date"
+                stroke="#64748b"
+                fontSize={12}
                 tickLine={false}
                 axisLine={false}
               />
-              <YAxis 
-                stroke="#64748b" 
+              <YAxis
+                stroke="#64748b"
                 fontSize={12}
                 tickLine={false}
                 axisLine={false}
                 tickFormatter={formatCurrency}
               />
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', borderRadius: '8px' }}
-                itemStyle={{ color: '#f8fafc' }}
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: "#0f172a",
+                  borderColor: "#1e293b",
+                  borderRadius: "8px",
+                }}
+                itemStyle={{ color: "#f8fafc" }}
                 formatter={(value: number, name: string) => [
-                  `$${value.toLocaleString("en-US", { minimumFractionDigits: 2 })}`, 
-                  name === "historicalValue" ? "Historical Value" : "Projected Value"
+                  `$${value.toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
+                  name === "historicalValue" ? "Historical Value" : "Projected Value",
                 ]}
-                labelStyle={{ color: '#94a3b8', marginBottom: '4px' }}
+                labelStyle={{ color: "#94a3b8", marginBottom: "4px" }}
               />
-              <Area 
-                type="monotone" 
-                dataKey="historicalValue" 
-                stroke="#06b6d4" 
+              <Area
+                type="monotone"
+                dataKey="historicalValue"
+                stroke="#06b6d4"
                 strokeWidth={3}
-                fill="url(#colorHistory)" 
-                activeDot={{ r: 6, fill: '#06b6d4' }}
+                fill="url(#colorHistory)"
+                activeDot={{ r: 6, fill: "#06b6d4" }}
               />
-              <Area 
-                type="monotone" 
-                dataKey="projectedValue" 
-                stroke="#6366f1" 
+              <Area
+                type="monotone"
+                dataKey="projectedValue"
+                stroke="#6366f1"
                 strokeWidth={3}
                 strokeDasharray="5 5"
-                fill="url(#colorProjected)" 
-                activeDot={{ r: 6, fill: '#6366f1' }}
+                fill="url(#colorProjected)"
+                activeDot={{ r: 6, fill: "#6366f1" }}
               />
             </AreaChart>
           </ResponsiveContainer>

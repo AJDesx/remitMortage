@@ -40,7 +40,10 @@ export default function HelpArticlePage() {
 
   if (!article) {
     return (
-      <main data-testid="help-article-page" className="min-h-screen bg-[#060913] text-slate-100 pb-20">
+      <main
+        data-testid="help-article-page"
+        className="min-h-screen bg-[#060913] text-slate-100 pb-20"
+      >
         <Navbar />
         <div className="pt-32 px-6 max-w-3xl mx-auto text-center">
           <h1 className="text-3xl font-extrabold text-white mb-3">Article not found</h1>
@@ -74,7 +77,10 @@ export default function HelpArticlePage() {
   }
 
   return (
-    <main data-testid="help-article-page" className="min-h-screen bg-[#060913] text-slate-100 pb-20">
+    <main
+      data-testid="help-article-page"
+      className="min-h-screen bg-[#060913] text-slate-100 pb-20"
+    >
       <Navbar />
 
       <article className="pt-32 px-6 max-w-3xl mx-auto">
@@ -141,7 +147,11 @@ export default function HelpArticlePage() {
               Not really
             </button>
           </div>
-          <p role="status" aria-live="polite" className="mt-3 text-sm text-slate-400 min-h-[1.25rem]">
+          <p
+            role="status"
+            aria-live="polite"
+            className="mt-3 text-sm text-slate-400 min-h-[1.25rem]"
+          >
             {announcement}
           </p>
         </section>
@@ -160,9 +170,7 @@ export default function HelpArticlePage() {
                     className="block rounded-lg border border-slate-700 bg-[#0b0f1d] p-4 hover:border-cyan-500/50 transition-colors"
                   >
                     <span className="text-white font-medium">{candidate.title}</span>
-                    <span className="block text-sm text-slate-400 mt-0.5">
-                      {candidate.summary}
-                    </span>
+                    <span className="block text-sm text-slate-400 mt-0.5">{candidate.summary}</span>
                   </Link>
                 </li>
               ))}

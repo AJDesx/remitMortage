@@ -29,11 +29,7 @@ jest.mock("../src/context/NotificationContext", () => ({
 
 import OnboardingChecklist from "../src/components/onboarding/OnboardingChecklist";
 import ContractorOnboardingPage from "../src/app/contractor/onboarding/page";
-import {
-  applyStatusChange,
-  defaultOnboardingState,
-  type OnboardingState,
-} from "../src/lib/onboarding-steps";
+import { applyStatusChange, defaultOnboardingState } from "../src/lib/onboarding-steps";
 
 beforeEach(() => {
   notifyCalls = [];
@@ -70,7 +66,11 @@ describe("OnboardingChecklist", () => {
   it("shows the ready-for-review state when all contractor steps are done", () => {
     const state = applyStatusChange(
       applyStatusChange(
-        applyStatusChange(applyStatusChange(defaultOnboardingState(), "profile", "approved"), "documents", "approved"),
+        applyStatusChange(
+          applyStatusChange(defaultOnboardingState(), "profile", "approved"),
+          "documents",
+          "approved"
+        ),
         "license",
         "approved"
       ),
@@ -142,9 +142,7 @@ describe("ContractorOnboardingPage", () => {
     await waitFor(() =>
       expect(screen.getByTestId("contractor-onboarding-page")).toBeInTheDocument()
     );
-    expect(
-      await screen.findByTestId("onboarding-step-admin-review")
-    ).toBeInTheDocument();
+    expect(await screen.findByTestId("onboarding-step-admin-review")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /need help/i })).toBeInTheDocument();
   });
 
@@ -177,7 +175,8 @@ describe("ContractorOnboardingPage", () => {
     });
     await waitFor(() => {
       const stored = JSON.parse(window.localStorage.getItem("contractor-onboarding-state")!);
-      expect(stored.steps.find((s: any) => s.id === "payout").status).toBe("approved");
+      const payout = stored.steps.find((s: { id: string; status: string }) => s.id === "payout");
+      expect(payout.status).toBe("approved");
     });
   });
 

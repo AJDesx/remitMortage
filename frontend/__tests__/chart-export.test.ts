@@ -80,9 +80,9 @@ describe("chartExportFilename", () => {
   });
 
   it("pads single-digit months and days", () => {
-    expect(chartExportFilename("volume-trends", "csv", { now: new Date("2026-01-05T00:00:00") })).toBe(
-      "volume-trends-2026-01-05.csv"
-    );
+    expect(
+      chartExportFilename("volume-trends", "csv", { now: new Date("2026-01-05T00:00:00") })
+    ).toBe("volume-trends-2026-01-05.csv");
   });
 });
 

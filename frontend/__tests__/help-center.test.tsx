@@ -21,7 +21,9 @@ describe("HelpCenterPage", () => {
     expect(screen.getByTestId("help-center-page")).toBeInTheDocument();
     expect(screen.getByRole("searchbox", { name: /search help articles/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /how to apply for a loan/i })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /verification and kyc requirements/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /verification and kyc requirements/i })
+    ).toBeInTheDocument();
   });
 
   it("filters articles as the user types and announces the result count", () => {

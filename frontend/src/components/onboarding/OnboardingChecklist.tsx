@@ -95,7 +95,8 @@ function ChecklistStep({
               <UserRound className="w-3.5 h-3.5" aria-hidden="true" />
               <dt className="sr-only">Assigned to</dt>
               <dd>
-                Owner: <span className="text-slate-300">{step.owner === "admin" ? "Admin" : "You"}</span>
+                Owner:{" "}
+                <span className="text-slate-300">{step.owner === "admin" ? "Admin" : "You"}</span>
               </dd>
             </div>
             <div className="flex items-center gap-1.5">
@@ -193,12 +194,17 @@ export default function OnboardingChecklist({
   // Announce status transitions (screen readers pick this up via aria-live).
   useEffect(() => {
     const changed = state.steps
-      .filter((step) => previousStatuses.current[step.id] && previousStatuses.current[step.id] !== step.status)
+      .filter(
+        (step) =>
+          previousStatuses.current[step.id] && previousStatuses.current[step.id] !== step.status
+      )
       .map((step) => `${step.title}: ${STATUS_LABELS[step.status]}`);
     if (changed.length > 0) {
       setAnnouncement(`Onboarding updated. ${changed.join(". ")}.`);
     }
-    previousStatuses.current = Object.fromEntries(state.steps.map((step) => [step.id, step.status]));
+    previousStatuses.current = Object.fromEntries(
+      state.steps.map((step) => [step.id, step.status])
+    );
   }, [state.steps]);
 
   return (
