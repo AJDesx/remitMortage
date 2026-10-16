@@ -1,0 +1,59 @@
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: remitmortgage-redis-auth
+  labels:
+    app: remitmortgage-workers
+spec:
+  secretTargetRef:
+    - parameter: connection
+      name: remitmortgage-backend-secrets
+      key: redis-url
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: remitmortgage-workers
+  labels:
+    app: remitmortgage-workers
+spec:
+  scaleTargetRef:
+    name: remitmortgage-backend
+  pollingInterval: 15
+  cooldownPeriod: 300
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    - type: redis
+      metadata:
+        listName: bull:remitmortgage-notifications:wait
+        listLength: "10"
+      authenticationRef:
+        name: remitmortgage-redis-auth
+    - type: redis
+      metadata:
+        listName: bull:remitmortgage-webhooks:wait
+        listLength: "10"
+      authenticationRef:
+        name: remitmortgage-redis-auth
+    - type: redis
+      metadata:
+        listName: bull:remitmortgage-analytics:wait
+        listLength: "25"
+      authenticationRef:
+        name: remitmortgage-redis-auth

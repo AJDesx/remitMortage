@@ -133,6 +133,9 @@ For detailed manifest configuration and policies, see [devops/k8s/README.md](./k
 
 ## Backup Verification
 
+Cross-region replication and the secondary-region recovery procedure are
+documented in [docs/CROSS_REGION_BACKUP_RECOVERY.md](../docs/CROSS_REGION_BACKUP_RECOVERY.md).
+
 A backup nobody has restored is an assumption, not a recovery plan. The
 `Backup Verification` workflow (`.github/workflows/backup-verification.yml`)
 runs a full drill on the 1st of every month, and on demand via
