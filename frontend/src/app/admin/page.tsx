@@ -7,6 +7,7 @@ import dynamic from "next/dynamic";
 import toast, { Toaster } from "react-hot-toast";
 import { useWallet, OptionalWalletProvider } from "../../context/WalletContext";
 import { EmptyState } from "../../components/EmptyState";
+import HelpLink from "../../components/help/HelpLink";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useImpersonation } from "../../hooks/useImpersonation";
 import { startImpersonation } from "../../lib/impersonationApi";
@@ -649,6 +650,7 @@ function PendingLoansTab({
             />
             <span>Select All ({loans.length} loans)</span>
           </label>
+          <HelpLink context="admin-review" />
           <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
             <button
               onClick={() => setViewMode("kanban")}
